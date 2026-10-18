@@ -13,6 +13,7 @@ const DEFAULTS = {
   cap: 77.6, cons: 20, soc0: 100, resStop: 10, resEnd: 15, eff: 95,
   timeFactor: 90, minStop: 20, meal: true, mealMin: 45, maxLeg: 230, minGap: 80, timeVal: 10,
   ptPrice: 0.49, cbAtl: 50, cbOther: 20, gemVal: 100,
+  ptMode: 'go', goInclOpc: true, cemePrice: 0.15, egme: 0.1088, vat: 23, opcGuess: 0.20,
   esPrices: Object.fromEntries(ES_OPS), esOther: 0.55,
   detourF: 1.3, skipBroken: true, ocmKey: '', ret: false, retPct: 40,
   home: null, from: null, to: null,
@@ -43,12 +44,12 @@ function hav(lat1, lon1, lat2, lon2){
 function setStatus(msg, err){ const el = $('status'); if (!msg) { el.hidden = true; return; } el.hidden = false; el.className = 'status' + (err ? ' err' : ''); el.textContent = msg; }
 
 /* ---------------- dados dos postos ---------------- */
-let PT = [], ES = [], PT_DATE = '';
+let PT = [], ES = [], PT_DATE = '', PT_TARIFFS = null;
 async function loadData(){
   try {
     const [pt, es] = await Promise.all([fetch('data/pt-stations.json').then(r => r.json()), fetch('data/es-stations.json').then(r => r.json())]);
-    PT_DATE = pt.updated;
-    PT = pt.sites.map(r => ({ id: 'pt:' + r[0] + ':' + r[8] + ',' + r[9], n: r[1], c: r[2], o: opName(r[3], r[4]), a: !!r[4], kw: r[5], p: r[6], st: r[7], la: r[8], lo: r[9], cc: 'PT' }));
+    PT_DATE = pt.updated; PT_TARIFFS = pt.tariffs_updated || null;
+    PT = pt.sites.map(r => ({ id: 'pt:' + r[0] + ':' + r[8] + ',' + r[9], n: r[1], c: r[2], o: opName(r[3], r[4]), a: !!r[4], kw: r[5], p: r[6], st: r[7], la: r[8], lo: r[9], cc: 'PT', opc: r[10] || null }));
     ES = es.sites.map(s => ({ id: 'es:' + s.name, n: s.name, c: s.city, o: s.operator, a: false, kw: s.kw, p: s.points, st: 'unknown', la: s.lat, lo: s.lon, cc: 'ES', manual: true }));
     $('pt-date').textContent = 'atualizado a ' + new Date(PT_DATE).toLocaleDateString('pt-PT');
   } catch (e) {
@@ -193,15 +194,38 @@ async function fetchOCM(rt){
 }
 function shortOp(o){ for (const [k] of ES_OPS) if (o.toLowerCase().includes(k.toLowerCase())) return k; return o.split(/[\s(]/).slice(0, 2).join(' '); }
 
-/* ---------------- preços ---------------- */
-function price(st){
-  const g = S.gemVal / 100;
+/* ---------------- preços ----------------
+   Cada posto tem uma tarifa: €/kWh, €/min, €/carregamento e a % devolvida em Gems.
+   Portugal, modo Atlante Go: preço fixo por kWh (opcionalmente + tarifa do operador noutras redes).
+   Portugal, modo cartão normal: (cartão + operador + IEC) por kWh, operador por minuto,
+   operador + taxa MOBI.E por carregamento, tudo com IVA. Os preços do operador vêm do tarifário MOBI.E. */
+const IEC = 0.001;
+function tariff(st){
+  const vat = 1 + S.vat / 100, opc = st.opc || null;
   if (st.cc === 'PT') {
-    const cb = (st.a ? S.cbAtl : S.cbOther) / 100;
-    return { pay: S.ptPrice, gem: S.ptPrice * cb * g, eff: S.ptPrice * (1 - cb * g), cbPct: st.a ? S.cbAtl : S.cbOther };
+    const oe = opc ? opc[0] : S.opcGuess, ot = opc ? opc[1] : 0, of = opc ? opc[2] : 0;
+    if (S.ptMode === 'ceme') {
+      return { e: (S.cemePrice + oe + IEC) * vat, t: ot * vat, f: (of + S.egme) * vat, gemRate: 0, opcKnown: !!opc,
+        label: `cartão ${fmtP(S.cemePrice)} + operador ${fmtP(oe)} €/kWh${ot ? ` + ${fmtP(ot)} €/min` : ''} (sem IVA)` };
+    }
+    const gemRate = (st.a ? S.cbAtl : S.cbOther) / 100;
+    if (st.a || S.goInclOpc) return { e: S.ptPrice, t: 0, f: 0, gemRate, opcKnown: true, label: `Atlante Go ${fmtP(S.ptPrice)} €/kWh` };
+    return { e: S.ptPrice + oe * vat, t: ot * vat, f: of * vat, gemRate, opcKnown: !!opc,
+      label: `Atlante Go ${fmtP(S.ptPrice)} + operador ${fmtP(oe)} €/kWh${ot ? ` + ${fmtP(ot)} €/min` : ''}` };
   }
   const p = S.esPrices[st.o] ?? S.esOther;
-  return { pay: p, gem: 0, eff: p, cbPct: 0 };
+  return { e: p, t: 0, f: 0, gemRate: 0, opcKnown: true, label: `${fmtP(p)} €/kWh` };
+}
+function costOf(tf, kwh, min){
+  if (kwh < 0.05) return { paid: 0, gem: 0, eff: 0 };
+  const paid = kwh * tf.e + min * tf.t + tf.f, gem = paid * tf.gemRate * S.gemVal / 100;
+  return { paid, gem, eff: paid - gem };
+}
+// preço efetivo de referência: 25 kWh carregados a partir de 20 %
+function refPrice(st){
+  const tb = chargeTables(st.kw), s1 = 20; let s2 = s1; while (s2 < 100 && tb.E[s2] - tb.E[s1] < 25) s2++;
+  const kwh = tb.E[s2] - tb.E[s1];
+  return costOf(tariff(st), kwh, tb.T[s2] - tb.T[s1]).eff / kwh;
 }
 
 /* ---------------- física do carregamento ---------------- */
@@ -225,7 +249,7 @@ function plan(route, stations, mode){
   const nodes = [{ km: 0, off: 0, start: true }, ...pool, { km: route.km, off: 0, end: true }];
   const N = nodes.length, M = S.meal ? 2 : 1, SS = 101;
   const tables = nodes.map(n => (n.start || n.end) ? null : chargeTables(n.kw));
-  const prices = nodes.map(n => (n.start || n.end) ? null : price(n));
+  const prices = nodes.map(n => (n.start || n.end) ? null : tariff(n));
   const det = nodes.map(n => (n.off || 0) * S.detourF);
   const pctPerKm = S.cons / S.cap;
   const forced = nodes.map((n, i) => (n.id && S.force[n.id]) ? i : -1).filter(i => i >= 0);
@@ -249,7 +273,7 @@ function plan(route, stations, mode){
           const tset = new Set([s, ...targets.filter(t => t > s)]);
           for (const t of tset) {
             const cm = tb.T[t] - tb.T[s], kwh = tb.E[t] - tb.E[s];
-            const add = mode === 'fast' ? (cm + detMin + kwh * 0.02) : (kwh * pr.eff + tv * (Math.max(0, cm - minDwell) + detMin));
+            const add = mode === 'fast' ? (cm + detMin + kwh * 0.02) : (costOf(pr, kwh, cm).eff + tv * (Math.max(0, cm - minDwell) + detMin));
             opts.push({ t, add, m2: m | mm, n2: n + 1, mm });
           }
         }
@@ -296,8 +320,9 @@ function plan(route, stations, mode){
       const tb = tables[st.j], pr = prices[st.j];
       const cm = tb.T[tDep] - tb.T[st.s], kwh = tb.E[tDep] - tb.E[st.s];
       const d = Math.max(cm, isMeal ? S.mealMin : S.minStop);
-      cash += kwh * pr.pay; gems += kwh * pr.gem; eff += kwh * pr.eff; kwhT += kwh; dwell += d + det[st.j] * 2 / 50 * 60;
-      stops.push({ node, arr: st.s, dep: tDep, kwh, cm, dwell: d, meal: isMeal, price: pr, cost: kwh * pr.pay, gem: kwh * pr.gem });
+      const c = costOf(pr, kwh, cm);
+      cash += c.paid; gems += c.gem; eff += c.eff; kwhT += kwh; dwell += d + det[st.j] * 2 / 50 * 60;
+      stops.push({ node, arr: st.s, dep: tDep, kwh, cm, dwell: d, meal: isMeal, price: pr, cost: c.paid, gem: c.gem });
     }
     const minPerKm = route.min / route.km * S.timeFactor / 100;
     const driveMin = drive * minPerKm;
@@ -403,7 +428,7 @@ function renderStops(r){
     const n = p.node, leg = n.km - prev; prev = n.km;
     add(`<div class="leg"><div class="rail"></div><div class="num">${fmtKm(leg)} · ≈ ${fmtMin(leg * r.minPerKm)}</div></div>`);
     const chips = [
-      n.a ? `<span class="chip atl">Atlante · ${p.price.cbPct}% em Gems</span>` : `<span class="chip ${n.cc !== 'PT' ? 'es' : ''}">${esc(n.o)}${n.cc !== 'PT' ? ' · ' + (n.cc === 'ES' ? 'Espanha' : n.cc) : ''}</span>`,
+      n.a ? `<span class="chip atl">Atlante${p.price.gemRate ? ` · ${Math.round(p.price.gemRate * 100)}% em Gems` : ''}</span>` : `<span class="chip ${n.cc !== 'PT' ? 'es' : ''}">${esc(n.o)}${n.cc !== 'PT' ? ' · ' + (n.cc === 'ES' ? 'Espanha' : n.cc) : ''}</span>`,
       `<span class="chip num">${Math.round(n.kw)} kW</span>`,
       p.meal ? '<span class="chip meal">Refeição</span>' : '<span class="chip">Pausa</span>',
       n.off > 0.9 ? `<span class="chip warn">desvio ≈ ${Math.round(n.off * S.detourF * 2)} km</span>` : '',
@@ -419,7 +444,7 @@ function renderStops(r){
         <div><b>${p.arr}% → ${p.dep}%</b><span>bateria</span></div>
         <div><b>${kwhTxt}</b><span>energia</span></div>
         <div><b>${fmtMin(p.cm)}</b><span>a carregar · parado ${fmtMin(p.dwell)}</span></div>
-        <div><b>${fmtE(p.cost - p.gem)}</b><span>${p.gem > 0.005 ? `pagas ${fmtE(p.cost)}, −${fmtE(p.gem)} Gems` : `a ${fmtP(p.price.pay)} €/kWh`}</span></div>
+        <div><b>${fmtE(p.cost - p.gem)}</b><span>${p.gem > 0.005 ? `pagas ${fmtE(p.cost)}, −${fmtE(p.gem)} Gems` : p.kwh > 0.05 ? `≈ ${fmtP(p.cost / p.kwh)} €/kWh tudo incluído` : 'sem custo'}</span></div>
       </div>
       <div class="rowbtns"><a class="btn sm" href="${gmapsTo(n)}" target="_blank" rel="noopener">Google Maps</a><a class="btn sm" href="https://waze.com/ul?ll=${n.la},${n.lo}&navigate=yes" target="_blank" rel="noopener">Waze</a><button class="btn sm" type="button" data-avoid="${esc(n.id)}">Evitar este posto</button>${S.force[n.id] ? `<button class="btn sm" type="button" data-unforce="${esc(n.id)}">Deixar de obrigar</button>` : ''}</div>
     </div></div>`);
@@ -469,9 +494,9 @@ function drawMap(r){
   const used = new Set(r ? r.stops.map(p => p.node.id) : []);
   STATIONS.forEach(st => {
     if (used.has(st.id)) return;
-    const pr = price(st);
+    const rp = refPrice(st), tf = tariff(st);
     L.circleMarker([st.la, st.lo], { radius: 5, color: '#fff', weight: 1.5, fillColor: st.a ? gem : (st.cc === 'PT' ? muted : '#a8452f'), fillOpacity: S.avoid[st.id] ? .25 : .9 })
-      .bindPopup(`<b>${esc(st.n)}</b><br>${esc(st.c)} · ${esc(st.o)} · ${Math.round(st.kw)} kW<br>km ${Math.round(st.km)} · ${fmtP(pr.eff)} €/kWh efetivo<br><button class="btn sm" data-force="${esc(st.id)}">Parar aqui</button>`)
+      .bindPopup(`<b>${esc(st.n)}</b><br>${esc(st.c)} · ${esc(st.o)} · ${Math.round(st.kw)} kW<br>km ${Math.round(st.km)} · ≈ ${fmtP(rp)} €/kWh efetivo<br><small>${esc(tf.label)}</small><br><button class="btn sm" data-force="${esc(st.id)}">Parar aqui</button>`)
       .addTo(layers);
   });
   if (r) r.stops.forEach((p, i) => {
@@ -495,13 +520,13 @@ function renderList(r){
   const list = STATIONS.filter(st => S.filter === 'atl' ? st.a : S.filter === 'pt' ? st.cc === 'PT' : S.filter === 'es' ? st.cc !== 'PT' : S.filter === 'off' ? S.avoid[st.id] : true);
   $('list-count').textContent = STATIONS.length;
   $('slist').innerHTML = list.map(st => {
-    const pr = price(st), off = !!S.avoid[st.id];
-    const meta = [st.o, Math.round(st.kw) + ' kW', st.p + (st.p === 1 ? ' ponto' : ' pontos'), st.off > 0.9 ? `desvio ≈ ${Math.round(st.off * S.detourF * 2)} km` : null, st.st === 'outOfOrder' ? 'avariado' : null, st.st === 'unknown' && st.cc === 'PT' ? 'estado desconhecido' : null, st.manual ? 'lista manual' : null].filter(Boolean).join(' · ');
+    const rp = refPrice(st), tf = tariff(st), off = !!S.avoid[st.id];
+    const meta = [st.o, Math.round(st.kw) + ' kW', st.p + (st.p === 1 ? ' ponto' : ' pontos'), st.off > 0.9 ? `desvio ≈ ${Math.round(st.off * S.detourF * 2)} km` : null, st.st === 'outOfOrder' ? 'avariado' : null, st.st === 'unknown' && st.cc === 'PT' ? 'estado desconhecido' : null, st.manual ? 'lista manual' : null, st.cc === 'PT' && !st.opc && (S.ptMode === 'ceme' || !S.goInclOpc) ? 'sem tarifa do operador (estimada)' : null].filter(Boolean).join(' · ');
     const btn = off ? `<button class="btn sm" type="button" data-unavoid="${esc(st.id)}">Repor</button>`
       : `<button class="btn sm" type="button" data-avoid="${esc(st.id)}">Evitar</button>` + (S.force[st.id] ? `<button class="btn sm" type="button" data-unforce="${esc(st.id)}">Não obrigar</button>` : `<button class="btn sm" type="button" data-force="${esc(st.id)}">Parar aqui</button>`);
     return `<div class="srow ${off ? 'off' : ''} ${used.has(st.id) ? 'used' : ''}"><div class="k">${Math.round(st.km)} km${used.has(st.id) ? '<br>no plano' : ''}</div>
       <div class="n"><b>${esc(st.n)}</b><span>${esc(st.c)} · ${esc(meta)}</span></div>
-      <div class="p"><b>${fmtP(pr.eff)} €</b><div class="rowbtns">${btn}</div></div></div>`;
+      <div class="p"><b>${fmtP(rp)} €</b><div class="rowbtns">${btn}</div></div></div>`;
   }).join('') || '<p class="note">Nenhum posto neste filtro.</p>';
   bindStationButtons($('slist'));
 }
@@ -515,6 +540,12 @@ const FIELDS = [
 function renderSettings(){
   const f = (k, l, u, st, val) => `<div class="field"><label for="f-${k}">${l}</label><div class="in"><input id="f-${k}" type="number" inputmode="decimal" step="${st}" value="${val}" data-k="${k}"><span class="u">${u}</span></div></div>`;
   let h = FIELDS.map(([t, fs]) => `<div class="grp"><h4>${t}</h4><div class="fields">${fs.map(([k, l, u, st]) => f(k, l, u, st, S[k])).join('')}</div></div>`).join('');
+  h += `<div class="grp"><h4>Como pagas em Portugal</h4>
+    <label class="check"><input type="radio" name="ptmode" value="go" ${S.ptMode !== 'ceme' ? 'checked' : ''}> Atlante Go (preço fixo por kWh)</label>
+    <label class="check"><input type="radio" name="ptmode" value="ceme" ${S.ptMode === 'ceme' ? 'checked' : ''}> Cartão ou app normal (preço do cartão + preço de cada operador)</label>
+    <label class="check"><input type="checkbox" id="f-goIncl" ${S.goInclOpc ? 'checked' : ''}> O Atlante Go já inclui o preço do operador noutras redes</label>
+    <div class="fields">${f('cemePrice', 'Preço do teu cartão (sem IVA)', '€/kWh', .01, S.cemePrice)}${f('egme', 'Taxa MOBI.E por carregamento (sem IVA)', '€', .0001, S.egme)}${f('vat', 'IVA', '%', 1, S.vat)}${f('opcGuess', 'Preço do operador quando não é conhecido', '€/kWh', .01, S.opcGuess)}</div>
+    <p class="note">Os preços de cada operador vêm do tarifário oficial da MOBI.E (${PT_TARIFFS ? 'atualizado a ' + new Date(PT_TARIFFS).toLocaleDateString('pt-PT') : 'ainda por carregar'}) e são atualizados todas as semanas.</p></div>`;
   h += `<div class="grp"><h4>Espanha e outros países · €/kWh</h4><div class="fields">${ES_OPS.map(([op]) => f('es-' + op, op, '€/kWh', .01, S.esPrices[op])).join('')}${f('esOther', 'Outras redes', '€/kWh', .01, S.esOther)}</div></div>`;
   h += `<div class="grp"><h4>Opções</h4>
     <label class="check"><input type="checkbox" id="f-meal" ${S.meal ? 'checked' : ''}> Uma das paragens é para comer (usa a duração da refeição)</label>
@@ -534,6 +565,8 @@ function renderSettings(){
     save(); recompute();
   }));
   $('f-meal').onchange = e => { S.meal = e.target.checked; recompute(); };
+  document.querySelectorAll('input[name="ptmode"]').forEach(r => r.onchange = () => { S.ptMode = r.value; save(); recompute(); });
+  $('f-goIncl').onchange = e => { S.goInclOpc = e.target.checked; recompute(); };
   $('f-skipBroken').onchange = e => { S.skipBroken = e.target.checked; recompute(); };
   $('f-ocm').onchange = e => { S.ocmKey = e.target.value.trim(); save(); ROUTES.forEach(r => r.stations = null); if (RT) selectRoute(S.alt); };
   if ($('set-home')) $('set-home').onclick = () => { S.home = { name: 'Casa', lat: S.from.lat, lon: S.from.lon }; save(); renderSettings(); };
