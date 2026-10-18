@@ -57,6 +57,11 @@ button,input{font:inherit}
 .status{background:var(--surface);border-radius:8px;padding:10px 12px;font-size:14px}
 .status.err{background:var(--warn-soft);color:var(--ink)}
 
+/* Alterações manuais à viagem */
+.changes{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 12px;background:var(--warn-soft);border-radius:8px;padding:10px 12px;font-size:14px}
+.changes .rowbtns{flex:0 0 auto}
+.btn.strong{background:var(--ink);color:var(--surface);border-color:var(--ink);font-weight:700}
+
 /* Tabs */
 .grp{display:grid;gap:8px}
 .tabs{display:flex;gap:6px;flex-wrap:wrap}

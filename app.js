@@ -371,6 +371,7 @@ function recompute(pickStops){
 
 /* ---------------- desenho ---------------- */
 function render(){
+  renderChanges();
   $('results').hidden = false;
   // caminhos alternativos
   $('alts-wrap').hidden = ROUTES.length < 2;
@@ -454,6 +455,18 @@ function renderStops(r){
   add(`<div class="stop"><div class="km end">${Math.round(RT.km)}<small>KM</small></div><div class="card"><h3>Chegada · ${esc(S.to.name)}</h3><div class="chips"><span class="chip num">${r.endSoc}% de bateria</span>${S.ret ? `<span class="chip atl">pronto para a volta (mínimo ${endFloor()}%)</span>` : `<span class="chip">reserva pedida ${S.resEnd}%</span>`}</div></div></div>`);
   bindStationButtons(el);
 }
+function renderChanges(){
+  const el = $('changes');
+  const avoided = STATIONS.filter(s => S.avoid[s.id]), forced = STATIONS.filter(s => S.force[s.id]);
+  if (!avoided.length && !forced.length) { el.hidden = true; el.innerHTML = ''; return; }
+  const parts = [];
+  if (avoided.length) parts.push(avoided.length === 1 ? `evitaste <b>${esc(avoided[0].n)}</b>` : `evitaste <b>${avoided.length} postos</b>`);
+  if (forced.length) parts.push(forced.length === 1 ? `obrigaste a parar em <b>${esc(forced[0].n)}</b>` : `obrigaste <b>${forced.length} paragens</b>`);
+  el.hidden = false;
+  el.innerHTML = `<span>Nesta viagem ${parts.join(' e ')}.</span><div class="rowbtns">${avoided.length ? '<button class="btn" type="button" id="see-avoided">Ver</button>' : ''}<button class="btn strong" type="button" id="reset-trip">Repor viagem</button></div>`;
+  $('reset-trip').onclick = () => { STATIONS.forEach(s => { delete S.avoid[s.id]; delete S.force[s.id]; }); recompute(true); window.scrollTo({ top: 0, behavior: 'smooth' }); };
+  if ($('see-avoided')) $('see-avoided').onclick = () => { S.filter = 'off'; save(); $('d-list').open = true; render(); $('d-list').scrollIntoView({ behavior: 'smooth' }); };
+}
 function bindStationButtons(el){
   el.querySelectorAll('[data-avoid]').forEach(b => b.onclick = () => { S.avoid[b.dataset.avoid] = true; delete S.force[b.dataset.avoid]; recompute(); });
   el.querySelectorAll('[data-unavoid]').forEach(b => b.onclick = () => { delete S.avoid[b.dataset.unavoid]; recompute(); });
@@ -496,7 +509,7 @@ function drawMap(r){
     if (used.has(st.id)) return;
     const rp = refPrice(st), tf = tariff(st);
     L.circleMarker([st.la, st.lo], { radius: 5, color: '#fff', weight: 1.5, fillColor: st.a ? gem : (st.cc === 'PT' ? muted : '#a8452f'), fillOpacity: S.avoid[st.id] ? .25 : .9 })
-      .bindPopup(`<b>${esc(st.n)}</b><br>${esc(st.c)} · ${esc(st.o)} · ${Math.round(st.kw)} kW<br>km ${Math.round(st.km)} · ≈ ${fmtP(rp)} €/kWh efetivo<br><small>${esc(tf.label)}</small><br><button class="btn sm" data-force="${esc(st.id)}">Parar aqui</button>`)
+      .bindPopup(`<b>${esc(st.n)}</b><br>${esc(st.c)} · ${esc(st.o)} · ${Math.round(st.kw)} kW<br>km ${Math.round(st.km)} · ≈ ${fmtP(rp)} €/kWh efetivo<br><small>${esc(tf.label)}</small><br>${S.avoid[st.id] ? `<button class="btn sm" data-unavoid="${esc(st.id)}">Voltar a usar</button>` : `<button class="btn sm" data-force="${esc(st.id)}">Parar aqui</button> <button class="btn sm" data-avoid="${esc(st.id)}">Evitar</button>`}`)
       .addTo(layers);
   });
   if (r) r.stops.forEach((p, i) => {
