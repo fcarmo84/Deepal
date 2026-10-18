@@ -14,7 +14,7 @@ const DEFAULTS = {
   timeFactor: 90, minStop: 20, meal: true, mealMin: 45, maxLeg: 230, minGap: 80, timeVal: 10,
   ptPrice: 0.49, cbAtl: 50, cbOther: 20, gemVal: 100,
   esPrices: Object.fromEntries(ES_OPS), esOther: 0.55,
-  detourF: 1.3, skipBroken: true, ocmKey: '',
+  detourF: 1.3, skipBroken: true, ocmKey: '', ret: false, retPct: 40,
   home: null, from: null, to: null,
   stops: 0, alt: 0, avoid: {}, force: {}, filter: 'all'
 };
@@ -219,6 +219,7 @@ function chargeTables(kw){
    Estado: (paragem j, paragens feitas n, refeição feita m, bateria s%).
    'cheap' minimiza € + valor do tempo extra; 'fast' minimiza só o tempo (como uma app de rotas comum). */
 const MAXN = 6;
+const endFloor = () => S.ret ? Math.max(S.resEnd, Math.min(100, S.retPct)) : S.resEnd;
 function plan(route, stations, mode){
   const pool = stations.filter(st => !S.avoid[st.id] && !(S.skipBroken && st.st === 'outOfOrder'));
   const nodes = [{ km: 0, off: 0, start: true }, ...pool, { km: route.km, off: 0, end: true }];
@@ -264,7 +265,7 @@ function plan(route, stations, mode){
           const dist = road + det[j] + det[k];
           if (dist > S.maxLeg) continue;
           const sa = Math.floor(o.t - dist * pctPerKm + 1e-9);
-          if (sa < (nodes[k].end ? S.resEnd : S.resStop)) continue;
+          if (sa < (nodes[k].end ? endFloor() : S.resStop)) continue;
           const id2 = idx(k, o.n2, o.m2, sa);
           if (base < val[id2]) { val[id2] = base; par[id2] = idx(j, n, m, s); parT[id2] = o.t * 2 + o.mm; }
         }
@@ -425,7 +426,7 @@ function renderStops(r){
   });
   const last = RT.km - prev;
   add(`<div class="leg"><div class="rail"></div><div class="num">${fmtKm(last)} · ≈ ${fmtMin(last * r.minPerKm)}</div></div>`);
-  add(`<div class="stop"><div class="km end">${Math.round(RT.km)}<small>KM</small></div><div class="card"><h3>Chegada · ${esc(S.to.name)}</h3><div class="chips"><span class="chip num">${r.endSoc}% de bateria</span><span class="chip">reserva pedida ${S.resEnd}%</span></div></div></div>`);
+  add(`<div class="stop"><div class="km end">${Math.round(RT.km)}<small>KM</small></div><div class="card"><h3>Chegada · ${esc(S.to.name)}</h3><div class="chips"><span class="chip num">${r.endSoc}% de bateria</span>${S.ret ? `<span class="chip atl">pronto para a volta (mínimo ${endFloor()}%)</span>` : `<span class="chip">reserva pedida ${S.resEnd}%</span>`}</div></div></div>`);
   bindStationButtons(el);
 }
 function bindStationButtons(el){
@@ -553,6 +554,9 @@ async function init(){
     navigator.geolocation.getCurrentPosition(p => { S.from = { name: 'Aqui', lat: p.coords.latitude, lon: p.coords.longitude }; $('from').value = 'Aqui'; save(); setStatus(''); },
       () => setStatus('Não consegui obter a localização. Escreve a origem.', true), { enableHighAccuracy: false, timeout: 10000 });
   };
+  $('ret').checked = !!S.ret; $('ret-pct').value = S.retPct; $('ret-pct').disabled = !S.ret;
+  $('ret').onchange = e => { S.ret = e.target.checked; $('ret-pct').disabled = !S.ret; save(); if (RT) recompute(true); };
+  $('ret-pct').onchange = e => { const v = parseFloat(e.target.value); if (!isFinite(v)) { e.target.value = S.retPct; return; } S.retPct = Math.max(10, Math.min(100, Math.round(v))); e.target.value = S.retPct; save(); if (RT && S.ret) recompute(true); };
   $('trip').addEventListener('submit', e => { e.preventDefault(); document.querySelectorAll('.sugg').forEach(l => l.hidden = true); calculate(); });
   renderSettings();
   if (S.from && S.to) calculate();

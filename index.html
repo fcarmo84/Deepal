@@ -31,6 +31,10 @@
         <div class="pin"><input id="to" type="text" placeholder="Destino" enterkeyhint="search"></div>
         <ul class="sugg" id="to-sugg" hidden></ul>
       </div>
+      <div class="ret">
+        <label class="retcheck"><input type="checkbox" id="ret"> Deixar preparado para a volta</label>
+        <span class="retpct"><input id="ret-pct" type="number" inputmode="numeric" min="10" max="100" step="5" value="40" aria-label="Bateria à chegada para a volta"><span>% à chegada</span></span>
+      </div>
       <button type="submit" class="go" id="go">Calcular</button>
     </form>
     <div class="meta" id="meta"></div>
