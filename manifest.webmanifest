@@ -1,0 +1,11 @@
+{
+  "name": "Carga Barata",
+  "short_name": "Carga Barata",
+  "description": "Planeador de carregamentos pelo custo real",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#eef0ec",
+  "theme_color": "#1f4f9a",
+  "lang": "pt-PT",
+  "icons": [{"src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"}]
+}

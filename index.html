@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Carga Barata</title>
+<meta name="description" content="Planeador de carregamentos pelo custo real, para uso pessoal.">
+<meta name="theme-color" content="#1f4f9a">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Overpass:wght@400;600;800&family=Overpass+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+
+  <header class="routesign">
+    <div class="eyebrow">Carga Barata · planeador de carregamentos</div>
+    <form class="trip" id="trip" autocomplete="off">
+      <div class="place">
+        <label for="from">De</label>
+        <div class="pin"><input id="from" type="text" placeholder="Casa, cidade ou morada" enterkeyhint="search"><button type="button" class="ghost" id="from-geo" title="Usar a minha localização" aria-label="Usar a minha localização">◎</button></div>
+        <ul class="sugg" id="from-sugg" hidden></ul>
+      </div>
+      <button type="button" class="swap" id="swap" aria-label="Trocar origem e destino">⇅</button>
+      <div class="place">
+        <label for="to">Para</label>
+        <div class="pin"><input id="to" type="text" placeholder="Destino" enterkeyhint="search"></div>
+        <ul class="sugg" id="to-sugg" hidden></ul>
+      </div>
+      <button type="submit" class="go" id="go">Calcular</button>
+    </form>
+    <div class="meta" id="meta"></div>
+  </header>
+
+  <div class="status" id="status" role="status" hidden></div>
+
+  <section id="results" hidden>
+    <div class="grp" id="alts-wrap" hidden>
+      <div class="label">Caminho</div>
+      <div class="tabs" id="alts"></div>
+    </div>
+
+    <div class="grp">
+      <div class="label">Quantas paragens queres fazer?</div>
+      <div class="tabs" id="tabs"></div>
+    </div>
+
+    <div class="verdict">
+      <div class="kpi main"><span class="label">Custo real</span><span class="v" id="k-eff">—</span><span class="s" id="k-eff-s"></span></div>
+      <div class="kpi"><span class="label">Tempo total</span><span class="v" id="k-time">—</span><span class="s" id="k-time-s"></span></div>
+      <div class="kpi"><span class="label">Energia</span><span class="v" id="k-kwh">—</span><span class="s" id="k-kwh-s"></span></div>
+    </div>
+    <div class="compare" id="compare"></div>
+
+    <div class="mapbox">
+      <div id="map" aria-label="Mapa da rota"></div>
+      <div class="rowbtns"><a class="btn primary" id="gmaps" href="#" target="_blank" rel="noopener">Abrir percurso no Google Maps</a></div>
+    </div>
+
+    <div class="chart">
+      <div class="label">Bateria ao longo da viagem</div>
+      <svg id="chart" viewBox="0 0 640 190" role="img" aria-label="Percentagem de bateria por quilómetro"></svg>
+    </div>
+
+    <div class="stops" id="stops"></div>
+
+    <details id="d-list">
+      <summary>Postos rápidos nesta rota <span class="num note" id="list-count"></span></summary>
+      <div class="panel">
+        <div class="filters" id="filters"></div>
+        <p class="note">Preço efetivo = o que pagas menos os Green Gems que recebes. <b>Evitar</b> tira um posto do plano; <b>Parar aqui</b> obriga a parar nele.</p>
+        <div class="slist" id="slist"></div>
+      </div>
+    </details>
+  </section>
+
+  <details id="d-set">
+    <summary>Carro, tarifas e regras da viagem</summary>
+    <div class="panel" id="settings"></div>
+  </details>
+
+  <footer>
+    <p>Postos em Portugal: dados oficiais NAP MOBI.E, via <a href="https://nap.ocarroeletrico.com/" target="_blank" rel="noopener">nap.ocarroeletrico.com</a> (<span id="pt-date"></span>). Postos em Espanha: lista curta manual e, com chave, <a href="https://openchargemap.org" target="_blank" rel="noopener">Open Charge Map</a>. Rotas: <a href="https://project-osrm.org" target="_blank" rel="noopener">OSRM</a>. Pesquisa de locais: <a href="https://nominatim.org" target="_blank" rel="noopener">Nominatim</a>. Mapa © contribuidores do <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>.</p>
+    <p>Curva de carregamento do Deepal S07 segundo EVKX (estimada). Os preços são os que definires; confirma sempre na app da rede. Uso pessoal, sem fins comerciais.</p>
+  </footer>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

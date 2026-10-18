@@ -1,0 +1,14 @@
+{
+  "updated": "2026-10-18",
+  "note": "Lista curta e manual de postos rápidos em Espanha. Coordenadas aproximadas (centro da localidade ou saída da autoestrada). Confirmar sempre na app da rede. Com uma chave do Open Charge Map nas definições, a app procura também os postos reais ao longo da rota.",
+  "sites": [
+    {"name": "Zunder Lobón", "city": "Lobón", "operator": "Zunder", "kw": 150, "points": 4, "lat": 38.849, "lon": -6.624, "src": "zunder.com"},
+    {"name": "Zunder San Pedro de Mérida", "city": "San Pedro de Mérida", "operator": "Zunder", "kw": 150, "points": 4, "lat": 38.947, "lon": -6.229, "src": "zunder.com (A-5, saída 325)"},
+    {"name": "Zunder Almaraz", "city": "Almaraz", "operator": "Zunder", "kw": 360, "points": 8, "lat": 39.812, "lon": -5.690, "src": "zunder.com (A-5, saída 200)"},
+    {"name": "Tesla Supercharger Mérida", "city": "Mérida", "operator": "Tesla", "kw": 150, "points": 8, "lat": 38.905, "lon": -6.345, "src": "tesla.com"},
+    {"name": "Tesla Supercharger Trujillo", "city": "Trujillo", "operator": "Tesla", "kw": 150, "points": 8, "lat": 39.456, "lon": -5.868, "src": "tesla.com"},
+    {"name": "Tesla Supercharger Almaraz", "city": "Almaraz", "operator": "Tesla", "kw": 150, "points": 8, "lat": 39.806, "lon": -5.682, "src": "tesla.com"},
+    {"name": "Tesla Supercharger Oropesa", "city": "Oropesa", "operator": "Tesla", "kw": 150, "points": 8, "lat": 39.915, "lon": -5.175, "src": "tesla.com"},
+    {"name": "Iberdrola Coria", "city": "Coria", "operator": "Iberdrola", "kw": 60, "points": 6, "lat": 39.985, "lon": -6.536, "src": "iberdrolaespana.com (potência estimada)"}
+  ]
+}

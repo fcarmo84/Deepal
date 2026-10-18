@@ -1,0 +1,62 @@
+name: Atualizar postos e publicar
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # terças às 05:30 UTC, depois da atualização semanal do nap-dashboard (segundas)
+    - cron: "30 5 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  atualizar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Atualizar postos de Portugal (NAP MOBI.E)
+        if: github.event_name != 'push'
+        run: python3 scripts/update_pt.py
+      - name: Guardar alterações
+        if: github.event_name != 'push'
+        run: |
+          if git diff --quiet -- data/; then
+            echo "Sem alterações nos dados."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add data/
+            git commit -m "Atualizar postos de Portugal ($(date -u +%F))"
+            git push
+          fi
+      - name: Preparar o site
+        run: |
+          mkdir -p _site/data
+          cp index.html app.js style.css manifest.webmanifest icon.svg _site/
+          cp data/*.json _site/data/
+          touch _site/.nojekyll
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  publicar:
+    needs: atualizar
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
