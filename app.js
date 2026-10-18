@@ -5,12 +5,27 @@
 /* ---------------- carro: Changan Deepal S07 (EVKX, curva estimada) ---------------- */
 const CURVE = [1,10,19,29,38,47,56,65,75,84,93,92,91,91,90,89,88,87,87,86,85,84,83,82,82,81,80,79,78,78,77,76,75,74,74,73,72,71,70,69,69,68,67,66,65,65,64,63,62,61,61,60,59,58,57,57,56,55,54,53,52,52,51,50,49,48,48,47,46,45,44,44,43,42,41,40,39,39,38,37,36,35,35,34,33,32,31,31,30,29,28,27,26,26,25,24,23,22,22,21,20];
 
+/* Consumo do Deepal S07 em função da velocidade (modelo físico calibrado:
+   ~20 kWh/100 km a 120 km/h, perto dos ~19 kWh/100 km reais em uso misto).
+   Resistência do ar cresce com o quadrado da velocidade; rolamento ~constante. */
+const CAR_MODEL = { cda: 0.65, massKg: 2050, crr: 0.009, drive: 0.88, auxKw: 0.5 };
+function consAt(v){
+  const m = CAR_MODEL, ms = v / 3.6, rho = 1.2;
+  const aero = 0.5 * rho * m.cda * ms * ms, roll = m.crr * m.massKg * 9.81;   // N = J/m
+  const wheel = (aero + roll) * 100000 / 3.6e6;                                 // kWh/100 km
+  return wheel / m.drive + m.auxKw * 100 / v;
+}
+const consNow = () => consAt(S.cruise) * S.consAdj / 100;
+// tempo: o OSRM conta com os limites (120 km/h nas autoestradas); ~70 % do tempo é autoestrada
+const speedFactor = () => 0.3 + 0.7 * 120 / Math.max(60, S.cruise);
+const driveFactor = () => S.timeFactor / 100 * speedFactor();
+
 const ES_OPS = [
   ['Zunder', 0.59], ['Tesla', 0.55], ['Iberdrola', 0.49], ['IONITY', 0.69],
   ['Endesa', 0.59], ['Wenea', 0.56], ['Atlante', 0.39], ['Electra', 0.49], ['Fastned', 0.59]
 ];
 const DEFAULTS = {
-  cap: 77.6, cons: 20, soc0: 100, resStop: 10, resEnd: 15, eff: 95,
+  cap: 77.6, cruise: 120, consAdj: 100, soc0: 100, resStop: 10, resEnd: 15, eff: 95,
   timeFactor: 90, minStop: 20, meal: true, mealMin: 45, maxLeg: 230, minGap: 80, timeVal: 10,
   ptPrice: 0.49, cbAtl: 50, cbOther: 20, gemVal: 100,
   ptMode: 'go', goInclOpc: true, cemePrice: 0.15, egme: 0.1088, vat: 23, opcGuess: 0.20,
@@ -251,7 +266,7 @@ function plan(route, stations, mode){
   const tables = nodes.map(n => (n.start || n.end) ? null : chargeTables(n.kw));
   const prices = nodes.map(n => (n.start || n.end) ? null : tariff(n));
   const det = nodes.map(n => (n.off || 0) * S.detourF);
-  const pctPerKm = S.cons / S.cap;
+  const pctPerKm = consNow() / S.cap;
   const forced = nodes.map((n, i) => (n.id && S.force[n.id]) ? i : -1).filter(i => i >= 0);
   const size = N * (MAXN + 1) * M * SS;
   const val = new Float64Array(size).fill(Infinity), par = new Int32Array(size).fill(-1), parT = new Int16Array(size).fill(-1);
@@ -324,7 +339,7 @@ function plan(route, stations, mode){
       cash += c.paid; gems += c.gem; eff += c.eff; kwhT += kwh; dwell += d + det[st.j] * 2 / 50 * 60;
       stops.push({ node, arr: st.s, dep: tDep, kwh, cm, dwell: d, meal: isMeal, price: pr, cost: c.paid, gem: c.gem });
     }
-    const minPerKm = route.min / route.km * S.timeFactor / 100;
+    const minPerKm = route.min / route.km * driveFactor();
     const driveMin = drive * minPerKm;
     return { stops, cash, gems, eff, kwh: kwhT, drive, driveMin, dwell, total: driveMin + dwell, endSoc: steps[steps.length - 1].s, minPerKm };
   }
@@ -379,12 +394,20 @@ function render(){
   ROUTES.forEach((rt, i) => {
     const b = document.createElement('button'); b.className = 'tab'; b.type = 'button';
     b.setAttribute('aria-pressed', String(i === S.alt));
-    b.innerHTML = `<b>${i === 0 ? 'Mais rápido' : 'Alternativa ' + i}</b><span>${fmtKm(rt.km)} · ${fmtMin(rt.min * S.timeFactor / 100)}</span>`;
+    b.innerHTML = `<b>${i === 0 ? 'Mais rápido' : 'Alternativa ' + i}</b><span>${fmtKm(rt.km)} · ${fmtMin(rt.min * driveFactor())}</span>`;
     b.onclick = () => { if (i !== S.alt) selectRoute(i, true); };
     $('alts').appendChild(b);
   });
-  $('meta').innerHTML = `<span class="num">${fmtKm(RT.km)}</span><span>≈ ${fmtMin(RT.min * S.timeFactor / 100)} ao volante</span><span>${STATIONS.length} postos rápidos na rota</span>`;
+  $('meta').innerHTML = `<span class="num">${fmtKm(RT.km)}</span><span>≈ ${fmtMin(RT.min * driveFactor())} ao volante</span><span>${S.cruise} km/h · ${consNow().toFixed(1).replace('.', ',')} kWh/100 km</span><span>${STATIONS.length} postos rápidos na rota</span>`;
 
+  // velocidade em autoestrada
+  $('speeds').innerHTML = '';
+  [100, 110, 120, 130].forEach(v => {
+    const s = document.createElement('button'); s.className = 'tab'; s.type = 'button'; s.setAttribute('aria-pressed', String(S.cruise === v));
+    s.innerHTML = `<b>${v} km/h</b><span>${(consAt(v) * S.consAdj / 100).toFixed(1).replace('.', ',')} kWh/100</span>`;
+    s.onclick = () => { if (S.cruise === v) return; S.cruise = v; save(); recompute(true); };
+    $('speeds').appendChild(s);
+  });
   // número de paragens
   $('tabs').innerHTML = '';
   const feas = Object.keys(RES).map(Number).filter(n => n >= 1 && n <= 5);
@@ -546,7 +569,7 @@ function renderList(r){
 
 /* ---------------- definições ---------------- */
 const FIELDS = [
-  ['O carro', [['cap','Bateria útil','kWh',.1],['cons','Consumo em autoestrada','kWh/100 km',.1],['soc0','Bateria à partida','%',1],['resStop','Mínimo ao chegar a um posto','%',1],['resEnd','Mínimo ao chegar ao destino','%',1],['timeFactor','Tempo de condução face ao estimado','%',5]]],
+  ['O carro', [['cap','Bateria útil','kWh',.1],['consAdj','Ajuste de consumo (inverno, carga, vento)','%',5],['soc0','Bateria à partida','%',1],['resStop','Mínimo ao chegar a um posto','%',1],['resEnd','Mínimo ao chegar ao destino','%',1],['timeFactor','Tempo de condução face ao estimado','%',5]]],
   ['As paragens', [['minStop','Pausa mínima em cada paragem','min',1],['mealMin','Duração da refeição','min',1],['maxLeg','Máximo a conduzir sem parar','km',5],['minGap','Mínimo entre paragens','km',5],['timeVal','Quanto vale para ti 1 hora a mais','€/h',1]]],
   ['Portugal · Atlante Go', [['ptPrice','Preço em qualquer rede','€/kWh',.01],['cbAtl','Gems em postos Atlante','%',1],['cbOther','Gems noutras redes','%',1],['gemVal','Quanto valem os Gems para ti','%',5]]],
 ];
