@@ -42,6 +42,7 @@ const DEFAULTS = {
   ptMode: 'go', goInclOpc: true, cemePrice: 0.15, egme: 0.1088, vat: 23, opcGuess: 0.20,
   esPrices: Object.fromEntries(ES_OPS), esOther: 0.55,
   detourF: 1.3, skipBroken: true, ocmKey: '', ret: false, retPct: 40,
+  depart: '09:00', lunchFrom: '12:00', lunchTo: '14:30', dinnerFrom: '19:00', dinnerTo: '21:30',
   home: null, from: null, to: null,
   stops: 0, alt: 0, avoid: {}, force: {}, target: {}, filter: 'all'
 };
@@ -271,17 +272,63 @@ function chargeTables(kw){
    'cheap' minimiza € + valor do tempo extra; 'fast' minimiza só o tempo (como uma app de rotas comum). */
 const MAXN = 6;
 const endFloor = () => S.ret ? Math.max(S.resEnd, Math.min(100, S.retPct)) : S.resEnd;
+/* ---------------- horas e refeições ----------------
+   Horas em minutos desde a meia-noite. Portugal continental está 1 h atrás de Espanha/França;
+   as horas mostradas e as janelas de refeição usam a hora local de cada sítio. */
+const PT_POLY = [[-8.9,41.87],[-8.6,42.05],[-8.17,42.15],[-7.9,41.9],[-7.2,41.98],[-6.6,41.95],[-6.19,41.58],[-6.85,41.0],[-6.8,40.25],[-7.0,39.67],[-7.53,39.66],[-7.0,39.0],[-7.3,38.4],[-6.95,38.2],[-7.5,37.5],[-7.4,37.17],[-8.0,37.0],[-9.0,36.95],[-9.6,38.7],[-8.9,41.87]];
+function inPT(la, lo){
+  if (lo < -20) return true; // Açores/Madeira: tratamos como hora portuguesa
+  let c = false;
+  for (let i = 0, j = PT_POLY.length - 1; i < PT_POLY.length; j = i++) {
+    const [xi, yi] = PT_POLY[i], [xj, yj] = PT_POLY[j];
+    if ((yi > la) !== (yj > la) && lo < (xj - xi) * (la - yi) / (yj - yi) + xi) c = !c;
+  }
+  return c;
+}
+const tzOf = (la, lo, cc) => (cc ? cc === 'PT' : inPT(la, lo)) ? 0 : 60;
+const hm = str => { const m = /^(\d{1,2}):(\d{2})/.exec(str || ''); return m ? (+m[1]) * 60 + (+m[2]) : null; };
+const fmtClock = mins => { const d = ((Math.round(mins) % 1440) + 1440) % 1440; return String(Math.floor(d / 60)).padStart(2, '0') + ':' + String(d % 60).padStart(2, '0'); };
+function mealWindows(){
+  return [['Almoço', hm(S.lunchFrom), hm(S.lunchTo)], ['Jantar', hm(S.dinnerFrom), hm(S.dinnerTo)]].filter(w => w[1] != null && w[2] != null);
+}
+function mealAt(clock){ // devolve o nome da refeição se a hora (local) cair numa janela (até 15 min antes conta)
+  const c = ((clock % 1440) + 1440) % 1440;
+  for (const [name, a, b] of mealWindows()) if (c >= a - 15 && c <= b) return name;
+  return null;
+}
+
 function plan(route, stations, mode){
+  const dep0 = hm(S.depart) ?? 540;
+  // a viagem passa por uma janela de refeição? (estimativa: condução + 2 pausas)
+  let mealReq = !!S.meal;
+  if (mealReq) {
+    const est = route.min * driveFactor() + 2 * S.minStop;
+    let hits = false;
+    for (let t = 0; t <= est; t += 10) if (mealAt(dep0 + t)) { hits = true; break; }
+    mealReq = hits;
+  }
+  let res = planCore(route, stations, mode, dep0, mealReq);
+  let mealInfo = !S.meal ? 'off' : !mealReq ? 'none' : 'ok';
+  if (mealReq && !Object.keys(res).length) { res = planCore(route, stations, mode, dep0, false); mealInfo = 'missed'; }
+  Object.values(res).forEach(r => r.mealInfo = mealInfo);
+  return res;
+}
+
+function planCore(route, stations, mode, dep0, mealReq){
   const pool = stations.filter(st => !S.avoid[st.id] && !(S.skipBroken && st.st === 'outOfOrder'));
   const nodes = [{ km: 0, off: 0, start: true }, ...pool, { km: route.km, off: 0, end: true }];
-  const N = nodes.length, M = S.meal ? 2 : 1, SS = 101;
+  const N = nodes.length, M = mealReq ? 2 : 1, SS = 101;
   const tables = nodes.map(n => (n.start || n.end) ? null : chargeTables(n.kw));
   const prices = nodes.map(n => (n.start || n.end) ? null : tariff(n));
   const det = nodes.map(n => (n.off || 0) * S.detourF);
+  const tz0 = tzOf(S.from.lat, S.from.lon);
+  const tzN = nodes.map(n => (n.start ? tz0 : n.end ? tzOf(S.to.lat, S.to.lon) : tzOf(n.la, n.lo, n.cc === 'PT' ? 'PT' : 'XX')) - tz0);
+  const minPerKm = route.min / route.km * driveFactor();
   const pctPerKm = consNow() / S.cap;
   const forced = nodes.map((n, i) => (n.id && S.force[n.id]) ? i : -1).filter(i => i >= 0);
   const size = N * (MAXN + 1) * M * SS;
   const val = new Float64Array(size).fill(Infinity), par = new Int32Array(size).fill(-1), parT = new Int16Array(size).fill(-1);
+  const tArr = new Float64Array(size); // minutos desde a partida ao chegar a este estado (do melhor caminho)
   const idx = (j, n, m, s) => ((j * (MAXN + 1) + n) * M + m) * SS + s;
   const soc0 = Math.max(0, Math.min(100, Math.round(S.soc0)));
   val[idx(0, 0, 0, soc0)] = 0;
@@ -290,19 +337,21 @@ function plan(route, stations, mode){
 
   for (let j = 0; j < N - 1; j++) {
     for (let n = 0; n <= MAXN; n++) for (let m = 0; m < M; m++) for (let s = 0; s < SS; s++) {
-      const v0 = val[idx(j, n, m, s)]; if (v0 === Infinity) continue;
+      const id0 = idx(j, n, m, s), v0 = val[id0]; if (v0 === Infinity) continue;
+      const t0 = tArr[id0];
       const opts = [];
-      if (j === 0) opts.push({ t: s, add: 0, m2: m, n2: n, mm: 0 });
+      if (j === 0) opts.push({ t: s, add: 0, m2: m, n2: n, mm: 0, stay: 0 });
       else {
         const tb = tables[j], pr = prices[j], detMin = det[j] * 2 / 50 * 60;
-        for (const mm of (S.meal && m === 0 ? [0, 1] : [0])) {
+        const canEat = mealReq && m === 0 && mealAt(dep0 + t0 + tzN[j] + detMin / 2);
+        for (const mm of (canEat ? [0, 1] : [0])) {
           const minDwell = mm ? S.mealMin : S.minStop;
           const fixed = S.target[nodes[j].id];
           const tset = fixed != null ? new Set([Math.max(s, Math.min(100, fixed))]) : new Set([s, ...targets.filter(t => t > s)]);
           for (const t of tset) {
             const cm = tb.T[t] - tb.T[s], kwh = tb.E[t] - tb.E[s];
             const add = mode === 'fast' ? (cm + detMin + kwh * 0.02) : (costOf(pr, kwh, cm).eff + tv * (Math.max(0, cm - minDwell) + detMin));
-            opts.push({ t, add, m2: m | mm, n2: n + 1, mm });
+            opts.push({ t, add, m2: m | mm, n2: n + 1, mm, stay: Math.max(cm, minDwell) + detMin });
           }
         }
       }
@@ -319,7 +368,7 @@ function plan(route, stations, mode){
           const sa = Math.floor(o.t - dist * pctPerKm + 1e-9);
           if (sa < (nodes[k].end ? endFloor() : S.resStop)) continue;
           const id2 = idx(k, o.n2, o.m2, sa);
-          if (base < val[id2]) { val[id2] = base; par[id2] = idx(j, n, m, s); parT[id2] = o.t * 2 + o.mm; }
+          if (base < val[id2]) { val[id2] = base; par[id2] = id0; parT[id2] = o.t * 2 + o.mm; tArr[id2] = t0 + o.stay + road * minPerKm; }
         }
       }
     }
@@ -327,7 +376,7 @@ function plan(route, stations, mode){
   const out = {};
   for (let n = 0; n <= MAXN; n++) {
     let best = Infinity, bi = -1;
-    for (const m of (S.meal ? [1] : [0])) for (let s = 0; s < SS; s++) { const v = val[idx(N - 1, n, m, s)]; if (v < best) { best = v; bi = idx(N - 1, n, m, s); } }
+    for (const m of (mealReq ? [1] : [0])) for (let s = 0; s < SS; s++) { const v = val[idx(N - 1, n, m, s)]; if (v < best) { best = v; bi = idx(N - 1, n, m, s); } }
     if (bi >= 0) out[n] = rebuild(bi);
   }
   return out;
@@ -339,22 +388,25 @@ function plan(route, stations, mode){
       steps.push({ j, s, tcode: parT[cur] }); cur = par[cur];
     }
     steps.reverse();
-    const stops = []; let drive = 0, cash = 0, gems = 0, eff = 0, kwhT = 0, dwell = 0;
+    const stops = []; let drive = 0, cash = 0, gems = 0, eff = 0, kwhT = 0, dwell = 0, clock = dep0;
     for (let i = 0; i < steps.length; i++) {
       const st = steps[i], node = nodes[st.j];
-      if (i) drive += node.km - nodes[steps[i - 1].j].km + det[steps[i - 1].j] + det[st.j];
+      if (i) { const leg = node.km - nodes[steps[i - 1].j].km; drive += leg + det[steps[i - 1].j] + det[st.j]; clock += leg * minPerKm; }
       if (node.start || node.end) continue;
       const nx = steps[i + 1], tDep = Math.floor(nx.tcode / 2), isMeal = nx.tcode % 2 === 1;
-      const tb = tables[st.j], pr = prices[st.j];
+      const tb = tables[st.j], pr = prices[st.j], detMin = det[st.j] * 2 / 50 * 60;
       const cm = tb.T[tDep] - tb.T[st.s], kwh = tb.E[tDep] - tb.E[st.s];
       const d = Math.max(cm, isMeal ? S.mealMin : S.minStop);
       const c = costOf(pr, kwh, cm);
-      cash += c.paid; gems += c.gem; eff += c.eff; kwhT += kwh; dwell += d + det[st.j] * 2 / 50 * 60;
-      stops.push({ node, arr: st.s, dep: tDep, kwh, cm, dwell: d, meal: isMeal, price: pr, cost: c.paid, gem: c.gem });
+      cash += c.paid; gems += c.gem; eff += c.eff; kwhT += kwh; dwell += d + detMin;
+      const arrClock = clock + detMin / 2 + tzN[st.j];
+      stops.push({ node, arr: st.s, dep: tDep, kwh, cm, dwell: d, meal: isMeal, mealName: isMeal ? (mealAt(arrClock) || 'Refeição') : null,
+        price: pr, cost: c.paid, gem: c.gem, arrClock, depClock: arrClock + d, tzShift: tzN[st.j] });
+      clock += d + detMin;
     }
-    const minPerKm = route.min / route.km * driveFactor();
     const driveMin = drive * minPerKm;
-    return { stops, cash, gems, eff, kwh: kwhT, drive, driveMin, dwell, total: driveMin + dwell, endSoc: steps[steps.length - 1].s, minPerKm };
+    return { stops, cash, gems, eff, kwh: kwhT, drive, driveMin, dwell, total: driveMin + dwell, endSoc: steps[steps.length - 1].s, minPerKm,
+      departClock: dep0, endClock: dep0 + driveMin + dwell + tzN[N - 1], endShift: tzN[N - 1] };
   }
 }
 
@@ -456,10 +508,15 @@ function render(){
 }
 
 const gmapsTo = n => `https://www.google.com/maps/dir/?api=1&destination=${n.la},${n.lo}&travelmode=driving`;
+function mealNote(r){
+  if (r.mealInfo === 'none') return '<p class="note">A viagem não passa pela hora do almoço nem do jantar, por isso não há paragem para comer.</p>';
+  if (r.mealInfo === 'missed') return '<p class="note warn">Não encontrei um posto bom à hora do almoço ou do jantar. Experimenta mudar a hora de saída ou o número de paragens.</p>';
+  return '';
+}
 function renderStops(r){
   const el = $('stops'); el.innerHTML = '';
   const add = h => el.insertAdjacentHTML('beforeend', h);
-  add(`<div class="stop"><div class="km">0<small>KM</small></div><div class="card"><h3>Partida · ${esc(S.from.name)}</h3><div class="chips"><span class="chip num">${S.soc0}% de bateria</span></div></div></div>`);
+  add(`<div class="stop"><div class="km">0<small>KM</small></div><div class="card"><div class="label">Saída às ${fmtClock(r.departClock)}</div><h3>Partida · ${esc(S.from.name)}</h3><div class="chips"><span class="chip num">${S.soc0}% de bateria</span></div>${mealNote(r)}</div></div>`);
   let prev = 0;
   r.stops.forEach(p => {
     const n = p.node, leg = n.km - prev; prev = n.km;
@@ -467,14 +524,14 @@ function renderStops(r){
     const chips = [
       n.a ? `<span class="chip atl">Atlante${p.price.gemRate ? ` · ${Math.round(p.price.gemRate * 100)}% em Gems` : ''}</span>` : `<span class="chip ${n.cc !== 'PT' ? 'es' : ''}">${esc(n.o)}${n.cc !== 'PT' ? ' · ' + (n.cc === 'ES' ? 'Espanha' : n.cc) : ''}</span>`,
       `<span class="chip num">${Math.round(n.kw)} kW</span>`,
-      p.meal ? '<span class="chip meal">Refeição</span>' : '<span class="chip">Pausa</span>',
+      p.meal ? `<span class="chip meal">${p.mealName}</span>` : '<span class="chip">Pausa</span>',
       n.off > 0.9 ? `<span class="chip warn">desvio ≈ ${Math.round(n.off * S.detourF * 2)} km</span>` : '',
       n.st === 'unknown' && n.cc === 'PT' ? '<span class="chip warn">estado desconhecido</span>' : '',
       n.manual ? '<span class="chip warn">confirmar posto</span>' : ''
     ].join('');
     const kwhTxt = p.kwh > 0.05 ? `${p.kwh.toFixed(1).replace('.', ',')} kWh` : 'só pausa';
     add(`<div class="stop"><div class="km">${Math.round(n.km)}<small>KM</small></div><div class="card">
-      <div><div class="label">${esc(n.c)}</div><h3>${esc(n.n)}</h3></div>
+      <div><div class="label">${esc(n.c)} · ${fmtClock(p.arrClock)}–${fmtClock(p.depClock)}${p.tzShift ? ' <span title="hora local">(hora de Espanha)</span>' : ''}</div><h3>${esc(n.n)}</h3></div>
       <div class="chips">${chips}</div>
       <div class="socbar" aria-label="Carregar de ${p.arr}% a ${p.dep}%"><i class="low" style="left:0;width:${p.arr}%"></i><i style="left:${p.arr}%;width:${Math.max(0, p.dep - p.arr)}%"></i></div>
       <div class="facts">
@@ -489,7 +546,7 @@ function renderStops(r){
   });
   const last = RT.km - prev;
   add(`<div class="leg"><div class="rail"></div><div class="num">${fmtKm(last)} · ≈ ${fmtMin(last * r.minPerKm)}</div></div>`);
-  add(`<div class="stop"><div class="km end">${Math.round(RT.km)}<small>KM</small></div><div class="card"><h3>Chegada · ${esc(S.to.name)}</h3><div class="chips"><span class="chip num">${r.endSoc}% de bateria</span>${S.ret ? `<span class="chip atl">pronto para a volta (mínimo ${endFloor()}%)</span>` : `<span class="chip">reserva pedida ${S.resEnd}%</span>`}</div></div></div>`);
+  add(`<div class="stop"><div class="km end">${Math.round(RT.km)}<small>KM</small></div><div class="card"><div class="label">Chegada ≈ ${fmtClock(r.endClock)}${r.endShift ? ' (hora local)' : ''}</div><h3>Chegada · ${esc(S.to.name)}</h3><div class="chips"><span class="chip num">${r.endSoc}% de bateria</span>${S.ret ? `<span class="chip atl">pronto para a volta (mínimo ${endFloor()}%)</span>` : `<span class="chip">reserva pedida ${S.resEnd}%</span>`}</div></div></div>`);
   bindStationButtons(el);
 }
 function renderChanges(){
@@ -588,11 +645,11 @@ function renderList(r){
 /* ---------------- definições ---------------- */
 const FIELDS = [
   ['O carro', [['cap','Bateria útil','kWh',.1],['consAdj','Ajuste de consumo (inverno, carga, vento)','%',5],['soc0','Bateria à partida','%',1],['resStop','Mínimo ao chegar a um posto','%',1],['resEnd','Mínimo ao chegar ao destino','%',1],['timeFactor','Tempo de condução face ao estimado','%',5]]],
-  ['As paragens', [['minStop','Pausa mínima em cada paragem','min',1],['mealMin','Duração da refeição','min',1],['maxLeg','Máximo a conduzir sem parar','km',5],['minGap','Mínimo entre paragens','km',5],['timeVal','Quanto vale para ti 1 hora a mais','€/h',1]]],
+  ['As paragens', [['minStop','Pausa mínima em cada paragem','min',1],['mealMin','Duração da refeição','min',1],['lunchFrom','Almoço a partir das','hh:mm',0],['lunchTo','Almoço até às','hh:mm',0],['dinnerFrom','Jantar a partir das','hh:mm',0],['dinnerTo','Jantar até às','hh:mm',0],['maxLeg','Máximo a conduzir sem parar','km',5],['minGap','Mínimo entre paragens','km',5],['timeVal','Quanto vale para ti 1 hora a mais','€/h',1]]],
   ['Portugal · Atlante Go', [['ptPrice','Preço em qualquer rede','€/kWh',.01],['cbAtl','Gems em postos Atlante','%',1],['cbOther','Gems noutras redes','%',1],['gemVal','Quanto valem os Gems para ti','%',5]]],
 ];
 function renderSettings(){
-  const f = (k, l, u, st, val) => `<div class="field"><label for="f-${k}">${l}</label><div class="in"><input id="f-${k}" type="number" inputmode="decimal" step="${st}" value="${val}" data-k="${k}"><span class="u">${u}</span></div></div>`;
+  const f = (k, l, u, st, val) => u === 'hh:mm' ? `<div class="field"><label for="f-${k}">${l}</label><div class="in"><input id="f-${k}" type="time" value="${val}" data-time="${k}"></div></div>` : `<div class="field"><label for="f-${k}">${l}</label><div class="in"><input id="f-${k}" type="number" inputmode="decimal" step="${st}" value="${val}" data-k="${k}"><span class="u">${u}</span></div></div>`;
   let h = FIELDS.map(([t, fs]) => `<div class="grp"><h4>${t}</h4><div class="fields">${fs.map(([k, l, u, st]) => f(k, l, u, st, S[k])).join('')}</div></div>`).join('');
   h += `<div class="grp"><h4>Como pagas em Portugal</h4>
     <label class="check"><input type="radio" name="ptmode" value="go" ${S.ptMode !== 'ceme' ? 'checked' : ''}> Atlante Go (preço fixo por kWh)</label>
@@ -618,6 +675,7 @@ function renderSettings(){
     if (k.startsWith('es-')) S.esPrices[k.slice(3)] = v; else S[k] = v;
     save(); recompute();
   }));
+  $('settings').querySelectorAll('input[data-time]').forEach(inp => inp.addEventListener('change', () => { if (hm(inp.value) == null) { inp.value = S[inp.dataset.time]; return; } S[inp.dataset.time] = inp.value; save(); recompute(); }));
   $('f-meal').onchange = e => { S.meal = e.target.checked; recompute(); };
   document.querySelectorAll('input[name="ptmode"]').forEach(r => r.onchange = () => { S.ptMode = r.value; save(); recompute(); });
   $('f-goIncl').onchange = e => { S.goInclOpc = e.target.checked; recompute(); };
@@ -651,6 +709,8 @@ async function init(){
     navigator.geolocation.getCurrentPosition(p => { S.from = { name: 'Aqui', lat: p.coords.latitude, lon: p.coords.longitude }; $('from').value = 'Aqui'; save(); setStatus(''); },
       () => setStatus('Não consegui obter a localização. Escreve a origem.', true), { enableHighAccuracy: false, timeout: 10000 });
   };
+  $('depart').value = S.depart;
+  $('depart').onchange = e => { if (hm(e.target.value) == null) { e.target.value = S.depart; return; } S.depart = e.target.value; save(); if (RT) recompute(true); };
   $('ret').checked = !!S.ret; $('ret-pct').value = S.retPct; $('ret-pct').disabled = !S.ret;
   $('ret').onchange = e => { S.ret = e.target.checked; $('ret-pct').disabled = !S.ret; save(); if (RT) recompute(true); };
   $('ret-pct').onchange = e => { const v = parseFloat(e.target.value); if (!isFinite(v)) { e.target.value = S.retPct; return; } S.retPct = Math.max(10, Math.min(100, Math.round(v))); e.target.value = S.retPct; save(); if (RT && S.ret) recompute(true); };
