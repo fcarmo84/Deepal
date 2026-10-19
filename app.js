@@ -228,7 +228,7 @@ function shortOp(o){ for (const [k] of ES_OPS) if (o.toLowerCase().includes(k.to
 const IEC = 0.001;
 function tariff(st){
   const vat = 1 + S.vat / 100, opc = st.opc || null;
-  if (CAR().tesla && /tesla/i.test(st.o || '')) return { e: S.teslaOwner, t: 0, f: 0, gemRate: 0, opcKnown: true, label: `Supercharger (dono Tesla) ${fmtP(S.teslaOwner)} €/kWh` };
+  if (CAR().tesla && (/tesla/i.test(st.o || '') || /tesla|supercharger/i.test(st.n || ''))) return { e: S.teslaOwner, t: 0, f: 0, gemRate: 0, opcKnown: true, label: `Supercharger (dono Tesla) ${fmtP(S.teslaOwner)} €/kWh` };
   if (st.cc === 'PT') {
     const oe = opc ? opc[0] : S.opcGuess, ot = opc ? opc[1] : 0, of = opc ? opc[2] : 0;
     if (S.ptMode === 'ceme') {
@@ -567,10 +567,11 @@ function drawMap(r){
 
 function renderList(r){
   const used = new Set(r.stops.map(p => p.node.id));
-  const F = [['all','Todos'],['atl','Só Atlante'],['pt','Portugal'],['es','Fora de Portugal'],['off','Evitados']];
+  const isTesla = st => /tesla/i.test(st.o || '') || /tesla|supercharger/i.test(st.n || '');
+  const F = [['all','Todos'],['atl','Só Atlante'],['tsl','Só Tesla'],['pt','Portugal'],['es','Fora de Portugal'],['off','Evitados']];
   $('filters').innerHTML = F.map(([k, t]) => `<button class="flt" type="button" aria-pressed="${S.filter === k}" data-f="${k}">${t}</button>`).join('');
   $('filters').querySelectorAll('[data-f]').forEach(b => b.onclick = () => { S.filter = b.dataset.f; save(); renderList(r); });
-  const list = STATIONS.filter(st => S.filter === 'atl' ? st.a : S.filter === 'pt' ? st.cc === 'PT' : S.filter === 'es' ? st.cc !== 'PT' : S.filter === 'off' ? S.avoid[st.id] : true);
+  const list = STATIONS.filter(st => S.filter === 'atl' ? st.a : S.filter === 'tsl' ? isTesla(st) : S.filter === 'pt' ? st.cc === 'PT' : S.filter === 'es' ? st.cc !== 'PT' : S.filter === 'off' ? S.avoid[st.id] : true);
   $('list-count').textContent = STATIONS.length;
   $('slist').innerHTML = list.map(st => {
     const rp = refPrice(st), tf = tariff(st), off = !!S.avoid[st.id];
