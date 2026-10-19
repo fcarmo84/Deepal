@@ -32,7 +32,7 @@ const DEFAULTS = {
   esPrices: Object.fromEntries(ES_OPS), esOther: 0.55,
   detourF: 1.3, skipBroken: true, ocmKey: '', ret: false, retPct: 40,
   home: null, from: null, to: null,
-  stops: 0, alt: 0, avoid: {}, force: {}, filter: 'all'
+  stops: 0, alt: 0, avoid: {}, force: {}, target: {}, filter: 'all'
 };
 const KEY = 'carga-barata-v1';
 let S = load();
@@ -285,7 +285,8 @@ function plan(route, stations, mode){
         const tb = tables[j], pr = prices[j], detMin = det[j] * 2 / 50 * 60;
         for (const mm of (S.meal && m === 0 ? [0, 1] : [0])) {
           const minDwell = mm ? S.mealMin : S.minStop;
-          const tset = new Set([s, ...targets.filter(t => t > s)]);
+          const fixed = S.target[nodes[j].id];
+          const tset = fixed != null ? new Set([Math.max(s, Math.min(100, fixed))]) : new Set([s, ...targets.filter(t => t > s)]);
           for (const t of tset) {
             const cm = tb.T[t] - tb.T[s], kwh = tb.E[t] - tb.E[s];
             const add = mode === 'fast' ? (cm + detMin + kwh * 0.02) : (costOf(pr, kwh, cm).eff + tv * (Math.max(0, cm - minDwell) + detMin));
@@ -470,6 +471,7 @@ function renderStops(r){
         <div><b>${fmtMin(p.cm)}</b><span>a carregar · parado ${fmtMin(p.dwell)}</span></div>
         <div><b>${fmtE(p.cost - p.gem)}</b><span>${p.gem > 0.005 ? `pagas ${fmtE(p.cost)}, −${fmtE(p.gem)} Gems` : p.kwh > 0.05 ? `≈ ${fmtP(p.cost / p.kwh)} €/kWh tudo incluído` : 'sem custo'}</span></div>
       </div>
+      <div class="adj"><span>Sair com</span><button class="btn sm" type="button" data-adj="${esc(n.id)}" data-v="${Math.max(p.arr, p.dep - 5)}" aria-label="Menos 5%" ${p.dep <= p.arr ? 'disabled' : ''}>−5%</button><b class="num">${p.dep}%</b><button class="btn sm" type="button" data-adj="${esc(n.id)}" data-v="${Math.min(100, p.dep + 5)}" aria-label="Mais 5%" ${p.dep >= 100 ? 'disabled' : ''}>+5%</button>${S.target[n.id] != null ? `<button class="btn sm" type="button" data-auto="${esc(n.id)}">Automático</button>` : '<span class="note">automático</span>'}</div>
       <div class="rowbtns"><a class="btn sm" href="${gmapsTo(n)}" target="_blank" rel="noopener">Google Maps</a><a class="btn sm" href="https://waze.com/ul?ll=${n.la},${n.lo}&navigate=yes" target="_blank" rel="noopener">Waze</a><button class="btn sm" type="button" data-avoid="${esc(n.id)}">Evitar este posto</button>${S.force[n.id] ? `<button class="btn sm" type="button" data-unforce="${esc(n.id)}">Deixar de obrigar</button>` : ''}</div>
     </div></div>`);
   });
@@ -480,21 +482,24 @@ function renderStops(r){
 }
 function renderChanges(){
   const el = $('changes');
-  const avoided = STATIONS.filter(s => S.avoid[s.id]), forced = STATIONS.filter(s => S.force[s.id]);
-  if (!avoided.length && !forced.length) { el.hidden = true; el.innerHTML = ''; return; }
+  const avoided = STATIONS.filter(s => S.avoid[s.id]), adjusted = STATIONS.filter(s => S.target[s.id] != null), forced = STATIONS.filter(s => S.force[s.id] && S.target[s.id] == null);
+  if (!avoided.length && !forced.length && !adjusted.length) { el.hidden = true; el.innerHTML = ''; return; }
   const parts = [];
+  if (adjusted.length) parts.push(adjusted.length === 1 ? `ajustaste a carga em <b>${esc(adjusted[0].n)}</b>` : `ajustaste a carga em <b>${adjusted.length} paragens</b>`);
   if (avoided.length) parts.push(avoided.length === 1 ? `evitaste <b>${esc(avoided[0].n)}</b>` : `evitaste <b>${avoided.length} postos</b>`);
   if (forced.length) parts.push(forced.length === 1 ? `obrigaste a parar em <b>${esc(forced[0].n)}</b>` : `obrigaste <b>${forced.length} paragens</b>`);
   el.hidden = false;
   el.innerHTML = `<span>Nesta viagem ${parts.join(' e ')}.</span><div class="rowbtns">${avoided.length ? '<button class="btn" type="button" id="see-avoided">Ver</button>' : ''}<button class="btn strong" type="button" id="reset-trip">Repor viagem</button></div>`;
-  $('reset-trip').onclick = () => { STATIONS.forEach(s => { delete S.avoid[s.id]; delete S.force[s.id]; }); recompute(true); window.scrollTo({ top: 0, behavior: 'smooth' }); };
+  $('reset-trip').onclick = () => { STATIONS.forEach(s => { delete S.avoid[s.id]; delete S.force[s.id]; delete S.target[s.id]; }); recompute(true); window.scrollTo({ top: 0, behavior: 'smooth' }); };
   if ($('see-avoided')) $('see-avoided').onclick = () => { S.filter = 'off'; save(); $('d-list').open = true; render(); $('d-list').scrollIntoView({ behavior: 'smooth' }); };
 }
 function bindStationButtons(el){
-  el.querySelectorAll('[data-avoid]').forEach(b => b.onclick = () => { S.avoid[b.dataset.avoid] = true; delete S.force[b.dataset.avoid]; recompute(); });
+  el.querySelectorAll('[data-avoid]').forEach(b => b.onclick = () => { S.avoid[b.dataset.avoid] = true; delete S.force[b.dataset.avoid]; delete S.target[b.dataset.avoid]; recompute(); });
   el.querySelectorAll('[data-unavoid]').forEach(b => b.onclick = () => { delete S.avoid[b.dataset.unavoid]; recompute(); });
   el.querySelectorAll('[data-force]').forEach(b => b.onclick = () => { S.force[b.dataset.force] = true; recompute(); });
-  el.querySelectorAll('[data-unforce]').forEach(b => b.onclick = () => { delete S.force[b.dataset.unforce]; recompute(); });
+  el.querySelectorAll('[data-unforce]').forEach(b => b.onclick = () => { delete S.force[b.dataset.unforce]; delete S.target[b.dataset.unforce]; recompute(); });
+  el.querySelectorAll('[data-adj]').forEach(b => b.onclick = () => { const id = b.dataset.adj; S.target[id] = +b.dataset.v; S.force[id] = true; recompute(); });
+  el.querySelectorAll('[data-auto]').forEach(b => b.onclick = () => { const id = b.dataset.auto; delete S.target[id]; delete S.force[id]; recompute(); });
 }
 
 function renderChart(r){
