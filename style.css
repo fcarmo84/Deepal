@@ -33,6 +33,12 @@ button,input{font:inherit}
 /* Trip sign */
 .routesign{background:var(--sign);color:var(--sign-ink);border-radius:var(--r);padding:14px;display:grid;gap:10px}
 .eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:.08em;font-weight:700;opacity:.85}
+.cars{display:flex;gap:6px;flex-wrap:wrap}
+.car{flex:1 1 0;min-width:0;overflow:hidden;border:1.5px solid transparent;background:var(--sign-field);color:var(--sign-ink);border-radius:8px;padding:7px 8px;cursor:pointer;display:grid;gap:1px;text-align:left}
+.car b{font-family:var(--f-display);font-size:14px;font-weight:800}
+.car span{font-size:11px;opacity:.85;font-family:var(--f-num);white-space:nowrap}
+.car b{white-space:nowrap}
+.car[aria-pressed="true"]{background:var(--sign-ink);color:var(--sign);border-color:var(--sign-ink)}
 .trip{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 8px;align-items:end}
 .place{grid-column:1;position:relative;display:grid;gap:3px;min-width:0}
 .place label{font-size:12px;opacity:.85;font-weight:600}

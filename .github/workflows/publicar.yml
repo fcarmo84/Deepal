@@ -41,9 +41,13 @@ jobs:
             git push
           fi
       - name: Preparar o site
+        env:
+          OCM_KEY: ${{ secrets.OCM_KEY }}
         run: |
           mkdir -p _site/data
           cp index.html app.js style.css manifest.webmanifest icon.svg _site/
+          # chave do Open Charge Map guardada como secret (Settings → Secrets and variables → Actions → OCM_KEY)
+          printf 'window.CARGA_CONFIG = { ocmKey: %s };\n' "$(python3 -c 'import json,os;print(json.dumps(os.environ.get("OCM_KEY","").strip()))')" > _site/config.js
           cp data/*.json _site/data/
           touch _site/.nojekyll
       - uses: actions/configure-pages@v5

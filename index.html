@@ -19,6 +19,7 @@
 
   <header class="routesign">
     <div class="eyebrow">Carga Barata · planeador de carregamentos</div>
+    <div class="cars" id="cars" role="group" aria-label="Carro"></div>
     <form class="trip" id="trip" autocomplete="off">
       <div class="place">
         <label for="from">De</label>
@@ -95,11 +96,12 @@
 
   <footer>
     <p>Postos em Portugal: dados oficiais NAP MOBI.E, via <a href="https://nap.ocarroeletrico.com/" target="_blank" rel="noopener">nap.ocarroeletrico.com</a> (<span id="pt-date"></span>). Postos em Espanha: lista curta manual e, com chave, <a href="https://openchargemap.org" target="_blank" rel="noopener">Open Charge Map</a>. Rotas: <a href="https://project-osrm.org" target="_blank" rel="noopener">OSRM</a>. Pesquisa de locais: <a href="https://nominatim.org" target="_blank" rel="noopener">Nominatim</a>. Mapa © contribuidores do <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>.</p>
-    <p>Curva de carregamento do Deepal S07 segundo EVKX (estimada). Os preços são os que definires; confirma sempre na app da rede. Uso pessoal, sem fins comerciais.</p>
+    <p><span id="car-note"></span> Os preços são os que definires; confirma sempre na app da rede. Uso pessoal, sem fins comerciais.</p>
   </footer>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="config.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

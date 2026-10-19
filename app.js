@@ -2,15 +2,23 @@
    Tudo corre no navegador. As definições e a casa ficam guardadas só neste dispositivo. */
 'use strict';
 
-/* ---------------- carro: Changan Deepal S07 (EVKX, curva estimada) ---------------- */
-const CURVE = [1,10,19,29,38,47,56,65,75,84,93,92,91,91,90,89,88,87,87,86,85,84,83,82,82,81,80,79,78,78,77,76,75,74,74,73,72,71,70,69,69,68,67,66,65,65,64,63,62,61,61,60,59,58,57,57,56,55,54,53,52,52,51,50,49,48,48,47,46,45,44,44,43,42,41,40,39,39,38,37,36,35,35,34,33,32,31,31,30,29,28,27,26,26,25,24,23,22,22,21,20];
-
-/* Consumo do Deepal S07 em função da velocidade (modelo físico calibrado:
-   ~20 kWh/100 km a 120 km/h, perto dos ~19 kWh/100 km reais em uso misto).
-   Resistência do ar cresce com o quadrado da velocidade; rolamento ~constante. */
-const CAR_MODEL = { cda: 0.65, massKg: 2050, crr: 0.009, drive: 0.88, auxKw: 0.5 };
+/* ---------------- carros ----------------
+   Curvas de carregamento (kW por % de bateria) segundo EVKX; modelo físico de consumo
+   calibrado para valores reais em autoestrada. */
+const CARS = {
+  deepal: { name: 'Deepal S07', short: 'Deepal S07', sub: '77,6 kWh', cap: 77.6, tesla: false,
+    phys: { cda: 0.65, massKg: 2050, crr: 0.009, drive: 0.88, auxKw: 0.5 },
+    curve: [1,10,19,29,38,47,56,65,75,84,93,92,91,91,90,89,88,87,87,86,85,84,83,82,82,81,80,79,78,78,77,76,75,74,74,73,72,71,70,69,69,68,67,66,65,65,64,63,62,61,61,60,59,58,57,57,56,55,54,53,52,52,51,50,49,48,48,47,46,45,44,44,43,42,41,40,39,39,38,37,36,35,35,34,33,32,31,31,30,29,28,27,26,26,25,24,23,22,22,21,20] },
+  m3rwd: { name: 'Model 3 RWD', short: 'M3 RWD', sub: '57,5 kWh', cap: 57.5, tesla: true,
+    phys: { cda: 0.55, massKg: 1820, crr: 0.008, drive: 0.89, auxKw: 0.4 },
+    curve: [50,62,74,86,98,110,121,133,145,157,169,168,160,151,146,141,138,135,133,130,129,128,127,126,125,124,124,123,122,121,120,119,116,115,114,112,110,109,108,106,104,103,101,100,97,95,94,92,90,88,86,84,82,80,79,77,75,73,71,70,68,66,65,64,62,60,58,57,56,55,53,52,51,50,48,47,46,46,45,44,43,43,42,41,40,39,38,37,37,35,34,31,28,25,22,20,17,14,11,8,5] },
+  m3lr: { name: 'Model 3 Long Range', short: 'M3 LR', sub: 'Long Range · 75 kWh', cap: 75, tesla: true,
+    phys: { cda: 0.55, massKg: 1880, crr: 0.008, drive: 0.90, auxKw: 0.4 },
+    curve: [100,103,108,108,108,108,230,235,240,245,249,249,249,249,249,249,241,238,234,231,228,224,219,215,208,207,202,196,191,186,184,179,175,169,165,159,156,152,147,143,140,135,130,125,121,116,112,108,104,100,96,92,89,87,85,84,82,80,80,79,78,77,75,74,73,71,69,67,64,64,62,61,59,58,57,55,54,52,49,47,45,43,42,40,39,37,37,35,34,32,30,29,28,28,27,26,26,25,22,18,13] },
+};
+const CAR = () => CARS[S.car] || CARS.deepal;
 function consAt(v){
-  const m = CAR_MODEL, ms = v / 3.6, rho = 1.2;
+  const m = CAR().phys, ms = v / 3.6, rho = 1.2;
   const aero = 0.5 * rho * m.cda * ms * ms, roll = m.crr * m.massKg * 9.81;   // N = J/m
   const wheel = (aero + roll) * 100000 / 3.6e6;                                 // kWh/100 km
   return wheel / m.drive + m.auxKw * 100 / v;
@@ -24,10 +32,13 @@ const ES_OPS = [
   ['Zunder', 0.59], ['Tesla', 0.55], ['Iberdrola', 0.49], ['IONITY', 0.69],
   ['Endesa', 0.59], ['Wenea', 0.56], ['Atlante', 0.39], ['Electra', 0.49], ['Fastned', 0.59]
 ];
+// chave partilhada definida no GitHub (secret OCM_KEY), injetada em config.js na publicação
+const SITE_OCM_KEY = (window.CARGA_CONFIG && window.CARGA_CONFIG.ocmKey) || '';
+const ocmKey = () => S.ocmKey || SITE_OCM_KEY;
 const DEFAULTS = {
-  cap: 77.6, cruise: 120, consAdj: 100, soc0: 100, resStop: 10, resEnd: 15, eff: 95,
+  car: 'deepal', cap: 77.6, cruise: 120, consAdj: 100, soc0: 100, resStop: 10, resEnd: 15, eff: 95,
   timeFactor: 90, minStop: 20, meal: true, mealMin: 45, maxLeg: 230, minGap: 80, timeVal: 10,
-  ptPrice: 0.49, cbAtl: 50, cbOther: 20, gemVal: 100,
+  ptPrice: 0.49, cbAtl: 50, cbOther: 20, gemVal: 100, teslaOwner: 0.38,
   ptMode: 'go', goInclOpc: true, cemePrice: 0.15, egme: 0.1088, vat: 23, opcGuess: 0.20,
   esPrices: Object.fromEntries(ES_OPS), esOther: 0.55,
   detourF: 1.3, skipBroken: true, ocmKey: '', ret: false, retPct: 40,
@@ -172,7 +183,7 @@ async function stationsFor(rt){
   };
   PT.filter(inBox).forEach(s => add(s, s.a ? 10 : 3));
   let ocm = [];
-  if (S.ocmKey) { try { ocm = await fetchOCM(rt); } catch (e) { console.warn('OCM', e); setStatus('O Open Charge Map não respondeu; uso só a lista manual de Espanha.', true); } }
+  if (ocmKey()) { try { ocm = await fetchOCM(rt); } catch (e) { console.warn('OCM', e); setStatus('O Open Charge Map não respondeu; uso só a lista manual de Espanha.', true); } }
   if (ocm.length) ocm.filter(inBox).forEach(s => add(s, 3));
   ES.filter(inBox).forEach(s => {
     // se o OCM já trouxe um posto no mesmo sítio, ignora a entrada manual
@@ -193,7 +204,7 @@ async function fetchOCM(rt){
   const step = Math.max(1, Math.floor(rt.pts.length / 120));
   const pts = rt.pts.filter((p, i) => i % step === 0 || i === rt.pts.length - 1).map(p => [p.la, p.lo]);
   const url = 'https://api.openchargemap.io/v3/poi/?output=json&compact=false&verbose=false&maxresults=800&levelid=3&distance=3&distanceunit=km'
-    + '&key=' + encodeURIComponent(S.ocmKey) + '&polyline=' + encodeURIComponent(encodePolyline(pts));
+    + '&key=' + encodeURIComponent(ocmKey()) + '&polyline=' + encodeURIComponent(encodePolyline(pts));
   const r = await fetch(url);
   if (!r.ok) throw new Error('ocm ' + r.status);
   const j = await r.json();
@@ -217,6 +228,7 @@ function shortOp(o){ for (const [k] of ES_OPS) if (o.toLowerCase().includes(k.to
 const IEC = 0.001;
 function tariff(st){
   const vat = 1 + S.vat / 100, opc = st.opc || null;
+  if (CAR().tesla && /tesla/i.test(st.o || '')) return { e: S.teslaOwner, t: 0, f: 0, gemRate: 0, opcKnown: true, label: `Supercharger (dono Tesla) ${fmtP(S.teslaOwner)} €/kWh` };
   if (st.cc === 'PT') {
     const oe = opc ? opc[0] : S.opcGuess, ot = opc ? opc[1] : 0, of = opc ? opc[2] : 0;
     if (S.ptMode === 'ceme') {
@@ -247,7 +259,7 @@ function refPrice(st){
 function chargeTables(kw){
   const T = new Float64Array(101), E = new Float64Array(101), pct = S.cap / 100, eff = S.eff / 100;
   for (let s = 0; s < 100; s++) {
-    const p = Math.max(1, Math.min((CURVE[s] + CURVE[s + 1]) / 2, kw));
+    const C = CAR().curve, p = Math.max(1, Math.min((C[s] + C[s + 1]) / 2, kw));
     T[s + 1] = T[s] + (pct / (eff * p)) * 60;
     E[s + 1] = E[s] + pct / eff;
   }
@@ -587,14 +599,14 @@ function renderSettings(){
     <label class="check"><input type="checkbox" id="f-goIncl" ${S.goInclOpc ? 'checked' : ''}> O Atlante Go já inclui o preço do operador noutras redes</label>
     <div class="fields">${f('cemePrice', 'Preço do teu cartão (sem IVA)', '€/kWh', .01, S.cemePrice)}${f('egme', 'Taxa MOBI.E por carregamento (sem IVA)', '€', .0001, S.egme)}${f('vat', 'IVA', '%', 1, S.vat)}${f('opcGuess', 'Preço do operador quando não é conhecido', '€/kWh', .01, S.opcGuess)}</div>
     <p class="note">Os preços de cada operador vêm do tarifário oficial da MOBI.E (${PT_TARIFFS ? 'atualizado a ' + new Date(PT_TARIFFS).toLocaleDateString('pt-PT') : 'ainda por carregar'}) e são atualizados todas as semanas.</p></div>`;
-  h += `<div class="grp"><h4>Espanha e outros países · €/kWh</h4><div class="fields">${ES_OPS.map(([op]) => f('es-' + op, op, '€/kWh', .01, S.esPrices[op])).join('')}${f('esOther', 'Outras redes', '€/kWh', .01, S.esOther)}</div></div>`;
+  h += `<div class="grp"><h4>Espanha e outros países · €/kWh</h4><div class="fields">${ES_OPS.map(([op]) => f('es-' + op, op, '€/kWh', .01, S.esPrices[op])).join('')}${f('esOther', 'Outras redes', '€/kWh', .01, S.esOther)}${CAR().tesla ? f('teslaOwner', 'Supercharger com o teu Tesla', '€/kWh', .01, S.teslaOwner) : ''}</div></div>`;
   h += `<div class="grp"><h4>Opções</h4>
     <label class="check"><input type="checkbox" id="f-meal" ${S.meal ? 'checked' : ''}> Uma das paragens é para comer (usa a duração da refeição)</label>
     <label class="check"><input type="checkbox" id="f-skipBroken" ${S.skipBroken ? 'checked' : ''}> Ignorar postos marcados como avariados</label></div>
   <div class="grp"><h4>Casa</h4><p class="note">${S.home ? `Guardada neste telemóvel (${S.home.lat.toFixed(3)}, ${S.home.lon.toFixed(3)}).` : 'Ainda não definida. Pesquisa a tua morada no campo «De» e escolhe «Guardar como a minha casa».'}</p>
     <div class="rowbtns">${S.from ? '<button class="btn" type="button" id="set-home">Usar a origem atual como casa</button>' : ''}${S.home ? '<button class="btn" type="button" id="del-home">Apagar casa</button>' : ''}</div></div>
   <div class="grp"><h4>Postos em Espanha (opcional)</h4>
-    <div class="field"><label for="f-ocm">Chave do Open Charge Map</label><div class="in"><input id="f-ocm" type="text" autocomplete="off" spellcheck="false" value="${esc(S.ocmKey)}" placeholder="cola aqui a tua chave"></div></div>
+    <div class="field"><label for="f-ocm">Chave do Open Charge Map</label><div class="in"><input id="f-ocm" type="text" autocomplete="off" spellcheck="false" value="${esc(S.ocmKey)}" placeholder="${SITE_OCM_KEY ? 'chave da app já ativa' : 'cola aqui a tua chave'}"></div></div>
     <p class="note">Com a chave, a app procura todos os postos rápidos reais fora de Portugal ao longo da rota. Sem ela, usa só a lista curta manual. A chave fica guardada só neste telemóvel.</p></div>
   <p class="note">Os Gems só se usam em postos Atlante e expiram em 6 meses. Se não carregas na Atlante com frequência, baixa o valor dos Gems.</p>
   <div class="rowbtns"><button class="btn" type="button" id="reset">Repor valores iniciais</button></div>`;
@@ -612,7 +624,16 @@ function renderSettings(){
   $('f-ocm').onchange = e => { S.ocmKey = e.target.value.trim(); save(); ROUTES.forEach(r => r.stations = null); if (RT) selectRoute(S.alt); };
   if ($('set-home')) $('set-home').onclick = () => { S.home = { name: 'Casa', lat: S.from.lat, lon: S.from.lon }; save(); renderSettings(); };
   if ($('del-home')) $('del-home').onclick = () => { S.home = null; save(); renderSettings(); };
-  $('reset').onclick = () => { const keep = { home: S.home, from: S.from, to: S.to, ocmKey: S.ocmKey }; S = JSON.parse(JSON.stringify(DEFAULTS)); Object.assign(S, keep); save(); renderSettings(); recompute(true); };
+  $('reset').onclick = () => { const keep = { home: S.home, from: S.from, to: S.to, ocmKey: S.ocmKey, car: S.car, cap: CAR().cap }; S = JSON.parse(JSON.stringify(DEFAULTS)); Object.assign(S, keep); save(); renderSettings(); recompute(true); };
+}
+
+function renderCars(){
+  $('cars').innerHTML = Object.entries(CARS).map(([k, c]) => `<button type="button" class="car" aria-pressed="${S.car === k}" data-car="${k}"><b>${c.short}</b><span>${c.sub}</span></button>`).join('');
+  $('cars').querySelectorAll('[data-car]').forEach(b => b.onclick = () => {
+    const k = b.dataset.car; if (k === S.car) return;
+    S.car = k; S.cap = CARS[k].cap; S.target = {}; save(); renderCars(); renderSettings(); if (RT) recompute(true);
+  });
+  $('car-note').textContent = `Curva de carregamento do ${CAR().name} segundo EVKX (estimada).`;
 }
 
 /* ---------------- arranque ---------------- */
@@ -621,6 +642,7 @@ async function init(){
   bindPlace('from'); bindPlace('to');
   if (S.from) $('from').value = S.from.name;
   if (S.to) $('to').value = S.to.name;
+  renderCars();
   $('swap').onclick = () => { [S.from, S.to] = [S.to, S.from]; $('from').value = S.from?.name || ''; $('to').value = S.to?.name || ''; save(); };
   $('from-geo').onclick = () => {
     if (!navigator.geolocation) { setStatus('Este navegador não dá a localização.', true); return; }
