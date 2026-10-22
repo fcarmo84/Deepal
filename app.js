@@ -23,7 +23,15 @@ function consAt(v){
   const wheel = (aero + roll) * 100000 / 3.6e6;                                 // kWh/100 km
   return wheel / m.drive + m.auxKw * 100 / v;
 }
-const consNow = () => consAt(S.cruise) * S.consAdj / 100;
+// o que a app aprendeu com as tuas chegadas: multiplicador do consumo por carro (média pesada pelos km, últimos 10 trechos)
+function learnStats(car){
+  const L = ((S.learn || {})[car || S.car] || []).slice(-10);
+  let w = 0, s = 0; L.forEach(o => { w += o.km; s += o.km * o.mult; });
+  // 200 km «virtuais» a 1,0 evitam que um único trecho estranho mude tudo de uma vez
+  return { n: L.length, km: w, mult: w ? Math.min(1.5, Math.max(0.7, (s + 200) / (w + 200))) : 1 };
+}
+const learnedMult = () => learnStats().mult;
+const consNow = () => consAt(S.cruise) * S.consAdj / 100 * learnedMult();
 // tempo: o OSRM conta com os limites (120 km/h nas autoestradas); ~70 % do tempo é autoestrada
 const speedFactor = () => 0.3 + 0.7 * 120 / Math.max(60, S.cruise);
 const driveFactor = () => S.timeFactor / 100 * speedFactor();
@@ -42,6 +50,7 @@ const DEFAULTS = {
   ptMode: 'go', goInclOpc: true, cemePrice: 0.15, egme: 0.1088, vat: 23, opcGuess: 0.20,
   esPrices: Object.fromEntries(ES_OPS), esOther: 0.55,
   detourF: 1.3, skipBroken: true, ocmKey: '', ret: false, retPct: 40,
+  learn: {}, progress: null,
   depart: '09:00', lunchFrom: '12:00', lunchTo: '14:30', dinnerFrom: '19:00', dinnerTo: '21:30',
   home: null, from: null, to: null,
   stops: 0, alt: 0, avoid: {}, force: {}, target: {}, filter: 'all'
@@ -297,31 +306,41 @@ function mealAt(clock){ // devolve o nome da refeição se a hora (local) cair n
   return null;
 }
 
+const tripSig = () => S.from && S.to ? [S.from.lat, S.from.lon, S.to.lat, S.to.lon, S.alt].map(v => typeof v === 'number' ? v.toFixed(4) : v).join('|') : '';
+function activeProgress(){
+  const pr = S.progress;
+  if (!pr || pr.sig !== tripSig()) return null;
+  const st = STATIONS.find(s => s.id === pr.id);
+  return st ? { ...pr, st } : null;
+}
 function plan(route, stations, mode){
-  const dep0 = hm(S.depart) ?? 540;
+  const prog = activeProgress();
+  const dep0 = prog ? prog.clock : (hm(S.depart) ?? 540);
   // a viagem passa por uma janela de refeição? (estimativa: condução + 2 pausas)
-  let mealReq = !!S.meal;
+  let mealReq = !!S.meal && !(prog && prog.ate);
   if (mealReq) {
-    const est = route.min * driveFactor() + 2 * S.minStop;
+    const est = route.min * driveFactor() * (1 - (prog ? prog.st.km / route.km : 0)) + 2 * S.minStop;
     let hits = false;
     for (let t = 0; t <= est; t += 10) if (mealAt(dep0 + t)) { hits = true; break; }
     mealReq = hits;
   }
-  let res = planCore(route, stations, mode, dep0, mealReq);
-  let mealInfo = !S.meal ? 'off' : !mealReq ? 'none' : 'ok';
-  if (mealReq && !Object.keys(res).length) { res = planCore(route, stations, mode, dep0, false); mealInfo = 'missed'; }
+  let res = planCore(route, stations, mode, dep0, mealReq, prog);
+  let mealInfo = !S.meal ? 'off' : (prog && prog.ate) ? 'done' : !mealReq ? 'none' : 'ok';
+  if (mealReq && !Object.keys(res).length) { res = planCore(route, stations, mode, dep0, false, prog); mealInfo = 'missed'; }
   Object.values(res).forEach(r => r.mealInfo = mealInfo);
   return res;
 }
 
-function planCore(route, stations, mode, dep0, mealReq){
-  const pool = stations.filter(st => !S.avoid[st.id] && !(S.skipBroken && st.st === 'outOfOrder'));
-  const nodes = [{ km: 0, off: 0, start: true }, ...pool, { km: route.km, off: 0, end: true }];
+function planCore(route, stations, mode, dep0, mealReq, prog){
+  const startSt = prog ? prog.st : null, startKm = startSt ? startSt.km : 0;
+  const pool = stations.filter(st => st !== startSt && st.km > startKm + 1 && !S.avoid[st.id] && !(S.skipBroken && st.st === 'outOfOrder'));
+  const nodes = [startSt ? { ...startSt, start: true, station: true } : { km: 0, off: 0, start: true }, ...pool, { km: route.km, off: 0, end: true }];
   const N = nodes.length, M = mealReq ? 2 : 1, SS = 101;
-  const tables = nodes.map(n => (n.start || n.end) ? null : chargeTables(n.kw));
-  const prices = nodes.map(n => (n.start || n.end) ? null : tariff(n));
+  const noCharge = n => (n.start && !n.station) || n.end;
+  const tables = nodes.map(n => noCharge(n) ? null : chargeTables(n.kw));
+  const prices = nodes.map(n => noCharge(n) ? null : tariff(n));
   const det = nodes.map(n => (n.off || 0) * S.detourF);
-  const tz0 = tzOf(S.from.lat, S.from.lon);
+  const tz0 = startSt ? tzOf(startSt.la, startSt.lo, startSt.cc === 'PT' ? 'PT' : 'XX') : tzOf(S.from.lat, S.from.lon);
   const tzN = nodes.map(n => (n.start ? tz0 : n.end ? tzOf(S.to.lat, S.to.lon) : tzOf(n.la, n.lo, n.cc === 'PT' ? 'PT' : 'XX')) - tz0);
   const minPerKm = route.min / route.km * driveFactor();
   const pctPerKm = consNow() / S.cap;
@@ -330,7 +349,7 @@ function planCore(route, stations, mode, dep0, mealReq){
   const val = new Float64Array(size).fill(Infinity), par = new Int32Array(size).fill(-1), parT = new Int16Array(size).fill(-1);
   const tArr = new Float64Array(size); // minutos desde a partida ao chegar a este estado (do melhor caminho)
   const idx = (j, n, m, s) => ((j * (MAXN + 1) + n) * M + m) * SS + s;
-  const soc0 = Math.max(0, Math.min(100, Math.round(S.soc0)));
+  const soc0 = Math.max(0, Math.min(100, Math.round(prog ? prog.soc : S.soc0)));
   val[idx(0, 0, 0, soc0)] = 0;
   const targets = []; for (let t = 0; t <= 100; t += 5) targets.push(t);
   const tv = S.timeVal / 60;
@@ -340,9 +359,9 @@ function planCore(route, stations, mode, dep0, mealReq){
       const id0 = idx(j, n, m, s), v0 = val[id0]; if (v0 === Infinity) continue;
       const t0 = tArr[id0];
       const opts = [];
-      if (j === 0) opts.push({ t: s, add: 0, m2: m, n2: n, mm: 0, stay: 0 });
+      if (j === 0 && !nodes[0].station) opts.push({ t: s, add: 0, m2: m, n2: n, mm: 0, stay: 0 });
       else {
-        const tb = tables[j], pr = prices[j], detMin = det[j] * 2 / 50 * 60;
+        const tb = tables[j], pr = prices[j], detMin = j === 0 ? 0 : det[j] * 2 / 50 * 60;
         const canEat = mealReq && m === 0 && mealAt(dep0 + t0 + tzN[j] + detMin / 2);
         for (const mm of (canEat ? [0, 1] : [0])) {
           const minDwell = mm ? S.mealMin : S.minStop;
@@ -392,9 +411,9 @@ function planCore(route, stations, mode, dep0, mealReq){
     for (let i = 0; i < steps.length; i++) {
       const st = steps[i], node = nodes[st.j];
       if (i) { const leg = node.km - nodes[steps[i - 1].j].km; drive += leg + det[steps[i - 1].j] + det[st.j]; clock += leg * minPerKm; }
-      if (node.start || node.end) continue;
+      if (node.end || (node.start && !node.station)) continue;
       const nx = steps[i + 1], tDep = Math.floor(nx.tcode / 2), isMeal = nx.tcode % 2 === 1;
-      const tb = tables[st.j], pr = prices[st.j], detMin = det[st.j] * 2 / 50 * 60;
+      const tb = tables[st.j], pr = prices[st.j], detMin = st.j === 0 ? 0 : det[st.j] * 2 / 50 * 60;
       const cm = tb.T[tDep] - tb.T[st.s], kwh = tb.E[tDep] - tb.E[st.s];
       const d = Math.max(cm, isMeal ? S.mealMin : S.minStop);
       const c = costOf(pr, kwh, cm);
@@ -406,7 +425,7 @@ function planCore(route, stations, mode, dep0, mealReq){
     }
     const driveMin = drive * minPerKm;
     return { stops, cash, gems, eff, kwh: kwhT, drive, driveMin, dwell, total: driveMin + dwell, endSoc: steps[steps.length - 1].s, minPerKm,
-      departClock: dep0, endClock: dep0 + driveMin + dwell + tzN[N - 1], endShift: tzN[N - 1] };
+      departClock: dep0, startKm, startSoc: soc0, endClock: dep0 + driveMin + dwell + tzN[N - 1], endShift: tzN[N - 1] };
   }
 }
 
@@ -484,7 +503,7 @@ function render(){
     b.onclick = () => { S.stops = n; save(); render(); };
     $('tabs').appendChild(b);
   }
-  const r = RES[S.stops];
+  const r = RES[S.stops]; CURRENT_PLAN = r;
   if (!r) {
     $('stops').innerHTML = '<p class="note">Não há plano possível com estas regras. Aumenta o máximo a conduzir sem parar, baixa a reserva mínima ou verifica se há postos suficientes na rota.</p>';
     ['k-eff','k-time','k-kwh'].forEach(k => $(k).textContent = '—'); $('compare').textContent = '';
@@ -509,6 +528,7 @@ function render(){
 
 const gmapsTo = n => `https://www.google.com/maps/dir/?api=1&destination=${n.la},${n.lo}&travelmode=driving`;
 function mealNote(r){
+  if (r.mealInfo === 'done') return '<p class="note">Já comeste numa paragem anterior.</p>';
   if (r.mealInfo === 'none') return '<p class="note">A viagem não passa pela hora do almoço nem do jantar, por isso não há paragem para comer.</p>';
   if (r.mealInfo === 'missed') return '<p class="note warn">Não encontrei um posto bom à hora do almoço ou do jantar. Experimenta mudar a hora de saída ou o número de paragens.</p>';
   return '';
@@ -516,11 +536,24 @@ function mealNote(r){
 function renderStops(r){
   const el = $('stops'); el.innerHTML = '';
   const add = h => el.insertAdjacentHTML('beforeend', h);
-  add(`<div class="stop"><div class="km">0<small>KM</small></div><div class="card"><div class="label">Saída às ${fmtClock(r.departClock)}</div><h3>Partida · ${esc(S.from.name)}</h3><div class="chips"><span class="chip num">${S.soc0}% de bateria</span></div>${mealNote(r)}</div></div>`);
-  let prev = 0;
-  r.stops.forEach(p => {
-    const n = p.node, leg = n.km - prev; prev = n.km;
-    add(`<div class="leg"><div class="rail"></div><div class="num">${fmtKm(leg)} · ≈ ${fmtMin(leg * r.minPerKm)}</div></div>`);
+  const prog = activeProgress();
+  ARRIVE = {};
+  if (prog) {
+    const done = (prog.done || []).map(d => `${esc(d.n)} (${d.soc}%)`).join(' → ');
+    add(`<div class="progress"><div><b>Viagem em curso.</b> Chegaste a ${esc(prog.st.n)} às ${fmtClock(prog.clock)} com ${prog.soc}%. O resto do plano foi recalculado a partir daqui.${done ? `<br><span class="note">Feito: ${done}</span>` : ''}</div><div class="rowbtns"><button class="btn" type="button" id="undo-arrive">Anular última chegada</button><button class="btn" type="button" id="end-progress">Recomeçar viagem</button></div></div>`);
+  } else {
+    add(`<div class="stop"><div class="km">0<small>KM</small></div><div class="card"><div class="label">Saída às ${fmtClock(r.departClock)}</div><h3>Partida · ${esc(S.from.name)}</h3><div class="chips"><span class="chip num">${S.soc0}% de bateria</span></div>${mealNote(r)}</div></div>`);
+  }
+  if (prog) add(mealNote(r));
+  let prev = r.startKm, prevDep = r.startSoc, prevName = prog ? prog.st.n : 'casa', prevStop = null;
+  r.stops.forEach((p, i) => {
+    const n = p.node, leg = n.km - prev;
+    const here = prog && i === 0 && n.id === prog.st.id;
+    if (!here) {
+      ARRIVE[n.id] = { pred: p.arr, prevDep, legKm: leg + (n.off || 0) * S.detourF, prevName, stop: p, idx: i };
+      add(`<div class="leg"><div class="rail"></div><div class="num">${fmtKm(leg)} · ≈ ${fmtMin(leg * r.minPerKm)}</div></div>`);
+    }
+    prev = n.km; prevDep = p.dep; prevName = n.n; prevStop = p;
     const chips = [
       n.a ? `<span class="chip atl">Atlante${p.price.gemRate ? ` · ${Math.round(p.price.gemRate * 100)}% em Gems` : ''}</span>` : `<span class="chip ${n.cc !== 'PT' ? 'es' : ''}">${esc(n.o)}${n.cc !== 'PT' ? ' · ' + (n.cc === 'ES' ? 'Espanha' : n.cc) : ''}</span>`,
       `<span class="chip num">${Math.round(n.kw)} kW</span>`,
@@ -531,7 +564,7 @@ function renderStops(r){
     ].join('');
     const kwhTxt = p.kwh > 0.05 ? `${p.kwh.toFixed(1).replace('.', ',')} kWh` : 'só pausa';
     add(`<div class="stop"><div class="km">${Math.round(n.km)}<small>KM</small></div><div class="card">
-      <div><div class="label">${esc(n.c)} · ${fmtClock(p.arrClock)}–${fmtClock(p.depClock)}${p.tzShift ? ' <span title="hora local">(hora de Espanha)</span>' : ''}</div><h3>${esc(n.n)}</h3></div>
+      <div><div class="label">${esc(n.c)} · ${fmtClock(p.arrClock)}–${fmtClock(p.depClock)}${n.cc && n.cc !== 'PT' ? ' <span title="hora local">(hora de Espanha)</span>' : ''}</div><h3>${esc(n.n)}</h3></div>
       <div class="chips">${chips}</div>
       <div class="socbar" aria-label="Carregar de ${p.arr}% a ${p.dep}%"><i class="low" style="left:0;width:${p.arr}%"></i><i style="left:${p.arr}%;width:${Math.max(0, p.dep - p.arr)}%"></i></div>
       <div class="facts">
@@ -541,13 +574,59 @@ function renderStops(r){
         <div><b>${fmtE(p.cost - p.gem)}</b><span>${p.gem > 0.005 ? `pagas ${fmtE(p.cost)}, −${fmtE(p.gem)} Gems` : p.kwh > 0.05 ? `≈ ${fmtP(p.cost / p.kwh)} €/kWh tudo incluído` : 'sem custo'}</span></div>
       </div>
       <div class="adj"><span>Sair com</span><button class="btn sm" type="button" data-adj="${esc(n.id)}" data-v="${Math.max(p.arr, p.dep - 5)}" aria-label="Menos 5%" ${p.dep <= p.arr ? 'disabled' : ''}>−5%</button><b class="num">${p.dep}%</b><button class="btn sm" type="button" data-adj="${esc(n.id)}" data-v="${Math.min(100, p.dep + 5)}" aria-label="Mais 5%" ${p.dep >= 100 ? 'disabled' : ''}>+5%</button>${S.target[n.id] != null ? `<button class="btn sm" type="button" data-auto="${esc(n.id)}">Automático</button>` : '<span class="note">automático</span>'}</div>
+      ${here ? '' : `<div class="arrive-box" data-box="${esc(n.id)}"><button class="btn sm strong" type="button" data-arrive="${esc(n.id)}">Cheguei aqui</button></div>`}
       <div class="rowbtns"><a class="btn sm" href="${gmapsTo(n)}" target="_blank" rel="noopener">Google Maps</a><a class="btn sm" href="https://waze.com/ul?ll=${n.la},${n.lo}&navigate=yes" target="_blank" rel="noopener">Waze</a><button class="btn sm" type="button" data-avoid="${esc(n.id)}">Evitar este posto</button>${S.force[n.id] ? `<button class="btn sm" type="button" data-unforce="${esc(n.id)}">Deixar de obrigar</button>` : ''}</div>
     </div></div>`);
   });
   const last = RT.km - prev;
+  ARRIVE.__end = { pred: r.endSoc, prevDep, legKm: last, prevName, stop: null, end: true };
   add(`<div class="leg"><div class="rail"></div><div class="num">${fmtKm(last)} · ≈ ${fmtMin(last * r.minPerKm)}</div></div>`);
-  add(`<div class="stop"><div class="km end">${Math.round(RT.km)}<small>KM</small></div><div class="card"><div class="label">Chegada ≈ ${fmtClock(r.endClock)}${r.endShift ? ' (hora local)' : ''}</div><h3>Chegada · ${esc(S.to.name)}</h3><div class="chips"><span class="chip num">${r.endSoc}% de bateria</span>${S.ret ? `<span class="chip atl">pronto para a volta (mínimo ${endFloor()}%)</span>` : `<span class="chip">reserva pedida ${S.resEnd}%</span>`}</div></div></div>`);
+  add(`<div class="stop"><div class="km end">${Math.round(RT.km)}<small>KM</small></div><div class="card"><div class="label">Chegada ≈ ${fmtClock(r.endClock)}${S.to && !inPT(S.to.lat, S.to.lon) ? ' (hora local)' : ''}</div><h3>Chegada · ${esc(S.to.name)}</h3><div class="chips"><span class="chip num">${r.endSoc}% de bateria</span>${S.ret ? `<span class="chip atl">pronto para a volta (mínimo ${endFloor()}%)</span>` : `<span class="chip">reserva pedida ${S.resEnd}%</span>`}</div><div class="arrive-box" data-box="__end"><button class="btn sm strong" type="button" data-arrive="__end">Cheguei ao destino</button></div></div></div>`);
   bindStationButtons(el);
+  bindArrive(el);
+}
+let ARRIVE = {}, CURRENT_PLAN = null;
+const nowClock = () => { const d = new Date(); return fmtClock(d.getHours() * 60 + d.getMinutes()); };
+function bindArrive(el){
+  el.querySelectorAll('[data-arrive]').forEach(b => b.onclick = () => {
+    const id = b.dataset.arrive, a = ARRIVE[id]; if (!a) return;
+    const box = el.querySelector(`[data-box="${CSS.escape(id)}"]`);
+    box.innerHTML = `<div class="arrive">
+      <label>Cheguei com <input type="number" inputmode="numeric" min="0" max="100" id="ar-soc" value="${a.pred}"> %</label>
+      <label>Saí de ${esc(a.prevName)} com <input type="number" inputmode="numeric" min="0" max="100" id="ar-dep" value="${a.prevDep}"> %</label>
+      ${a.end ? '' : `<label>Hora <input type="time" id="ar-time" value="${nowClock()}"></label>`}
+      <div class="rowbtns"><button class="btn sm strong" type="button" id="ar-save">Guardar</button><button class="btn sm" type="button" id="ar-cancel">Cancelar</button></div>
+      <p class="note">A app previa chegares com ${a.pred}%. Com o valor real aprende quanto o teu carro gasta${a.end ? '' : ' e recalcula o resto da viagem a partir daqui'}.</p></div>`;
+    box.querySelector('#ar-soc').focus();
+    box.querySelector('#ar-cancel').onclick = () => render();
+    box.querySelector('#ar-save').onclick = () => {
+      const soc = Math.round(+box.querySelector('#ar-soc').value), dep = Math.round(+box.querySelector('#ar-dep').value);
+      if (!isFinite(soc) || soc < 0 || soc > 100 || !isFinite(dep) || dep < soc || dep > 100) { box.querySelector('.note').textContent = 'Confirma as percentagens: a de saída tem de ser maior ou igual à de chegada.'; return; }
+      // aprender: quanto gastou de facto face ao previsto neste trecho
+      const predUsed = a.prevDep - a.pred, realUsed = dep - soc;
+      let msg = '', learned = false;
+      if (a.legKm >= 30 && predUsed >= 5) {
+        const factor = realUsed / predUsed;
+        if (factor > 0.5 && factor < 2) {
+          S.learn = S.learn || {}; S.learn[S.car] = S.learn[S.car] || [];
+          S.learn[S.car].push({ km: Math.round(a.legKm), mult: +(learnedMult() * factor).toFixed(3), date: new Date().toISOString().slice(0, 10) });
+          S.learn[S.car] = S.learn[S.car].slice(-30); learned = true;
+          const pct = Math.round((factor - 1) * 100);
+          msg = pct === 0 ? 'Gastou o que a app previa.' : `Neste trecho gastou ${Math.abs(pct)}% ${pct > 0 ? 'mais' : 'menos'} do que a app previa; a previsão foi ajustada.`;
+        } else msg = 'Este valor está muito longe do previsto, por isso não o usei para aprender.';
+      } else msg = 'Trecho curto demais para aprender com ele.';
+      if (a.end) { S.progress = null; save(); renderSettings(); setStatus(`Chegaste ao destino. ${msg}`); recompute(true); window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
+      const t = hm(box.querySelector('#ar-time').value) ?? hm(nowClock());
+      const old = activeProgress();
+      const ate = !!(old && old.ate) || CURRENT_PLAN.stops.slice(0, a.idx).some(p => p.meal); // refeições em paragens anteriores
+      S.progress = { sig: tripSig(), id: id, soc, clock: t, ate,
+        done: [...((old && old.done) || []), { n: a.stop.node.n, soc }], prev: S.progress || null, learned, car: S.car };
+      save(); renderSettings(); setStatus(msg); recompute(true); window.scrollTo({ top: 0, behavior: 'smooth' });
+    };
+  });
+  const undo = el.querySelector('#undo-arrive'), endp = el.querySelector('#end-progress');
+  if (undo) undo.onclick = () => { const pr = S.progress; if (pr && pr.learned && S.learn && S.learn[pr.car]) S.learn[pr.car].pop(); S.progress = (pr && pr.prev) || null; save(); renderSettings(); recompute(true); };
+  if (endp) endp.onclick = () => { S.progress = null; save(); setStatus(''); recompute(true); };
 }
 function renderChanges(){
   const el = $('changes');
@@ -582,9 +661,9 @@ function renderChart(r){
   if (firstES && lastPT && lastPT.km < firstES.km) { const bk = (firstES.km + lastPT.km) / 2;
     g += `<line x1="${x(bk)}" x2="${x(bk)}" y1="${T}" y2="${T + h}" stroke="var(--es)" stroke-dasharray="3 4" stroke-width="1.5"/><text x="${x(bk) + 5}" y="${T + 12}" font-size="11" fill="var(--es)" font-weight="700" font-family="Overpass, sans-serif">fronteira ≈</text>`; }
   g += `<rect x="${L}" y="${y(S.resStop)}" width="${w}" height="${y(0) - y(S.resStop)}" fill="var(--warn-soft)" opacity=".8"/>`;
-  const pts = [[0, S.soc0]]; r.stops.forEach(p => { pts.push([p.node.km, p.arr]); pts.push([p.node.km, p.dep]); }); pts.push([RT.km, r.endSoc]);
+  const pts = [[r.startKm, r.startSoc]]; r.stops.forEach(p => { pts.push([p.node.km, p.arr]); pts.push([p.node.km, p.dep]); }); pts.push([RT.km, r.endSoc]);
   const d = pts.map((p, i) => (i ? 'L' : 'M') + x(p[0]).toFixed(1) + ' ' + y(p[1]).toFixed(1)).join(' ');
-  g += `<path d="${d} L ${x(RT.km)} ${y(0)} L ${x(0)} ${y(0)} Z" fill="var(--gem)" opacity=".12"/><path d="${d}" fill="none" stroke="var(--gem)" stroke-width="2.5" stroke-linejoin="round"/>`;
+  g += `<path d="${d} L ${x(RT.km)} ${y(0)} L ${x(r.startKm)} ${y(0)} Z" fill="var(--gem)" opacity=".12"/><path d="${d}" fill="none" stroke="var(--gem)" stroke-width="2.5" stroke-linejoin="round"/>`;
   r.stops.forEach(p => { g += `<circle cx="${x(p.node.km)}" cy="${y(p.dep)}" r="4.5" fill="${p.node.a ? 'var(--gem)' : 'var(--surface)'}" stroke="var(--gem)" stroke-width="2"/>`; });
   $('chart').innerHTML = g;
 }
@@ -651,6 +730,8 @@ const FIELDS = [
 function renderSettings(){
   const f = (k, l, u, st, val) => u === 'hh:mm' ? `<div class="field"><label for="f-${k}">${l}</label><div class="in"><input id="f-${k}" type="time" value="${val}" data-time="${k}"></div></div>` : `<div class="field"><label for="f-${k}">${l}</label><div class="in"><input id="f-${k}" type="number" inputmode="decimal" step="${st}" value="${val}" data-k="${k}"><span class="u">${u}</span></div></div>`;
   let h = FIELDS.map(([t, fs]) => `<div class="grp"><h4>${t}</h4><div class="fields">${fs.map(([k, l, u, st]) => f(k, l, u, st, S[k])).join('')}</div></div>`).join('');
+  const ls = learnStats();
+  h += `<div class="grp"><h4>O que a app aprendeu com o ${CAR().name}</h4><p class="note">${ls.n ? `Com base em ${ls.n} ${ls.n === 1 ? 'trecho' : 'trechos'} (${Math.round(ls.km)} km), o carro gasta ${Math.abs(Math.round((ls.mult - 1) * 100))}% ${ls.mult >= 1 ? 'mais' : 'menos'} do que o modelo previa. A previsão já conta com isto.` : 'Ainda nada. Durante a viagem, toca em «Cheguei aqui» em cada paragem e escreve a bateria com que chegaste: a app compara com o previsto e afina o consumo.'}</p>${ls.n ? '<div class="rowbtns"><button class="btn" type="button" id="forget-learn">Esquecer o que aprendeu</button></div>' : ''}</div>`;
   h += `<div class="grp"><h4>Como pagas em Portugal</h4>
     <label class="check"><input type="radio" name="ptmode" value="go" ${S.ptMode !== 'ceme' ? 'checked' : ''}> Atlante Go (preço fixo por kWh)</label>
     <label class="check"><input type="radio" name="ptmode" value="ceme" ${S.ptMode === 'ceme' ? 'checked' : ''}> Cartão ou app normal (preço do cartão + preço de cada operador)</label>
@@ -676,6 +757,7 @@ function renderSettings(){
     save(); recompute();
   }));
   $('settings').querySelectorAll('input[data-time]').forEach(inp => inp.addEventListener('change', () => { if (hm(inp.value) == null) { inp.value = S[inp.dataset.time]; return; } S[inp.dataset.time] = inp.value; save(); recompute(); }));
+  if ($('forget-learn')) $('forget-learn').onclick = () => { if (S.learn) delete S.learn[S.car]; save(); renderSettings(); recompute(); };
   $('f-meal').onchange = e => { S.meal = e.target.checked; recompute(); };
   document.querySelectorAll('input[name="ptmode"]').forEach(r => r.onchange = () => { S.ptMode = r.value; save(); recompute(); });
   $('f-goIncl').onchange = e => { S.goInclOpc = e.target.checked; recompute(); };
@@ -683,7 +765,7 @@ function renderSettings(){
   $('f-ocm').onchange = e => { S.ocmKey = e.target.value.trim(); save(); ROUTES.forEach(r => r.stations = null); if (RT) selectRoute(S.alt); };
   if ($('set-home')) $('set-home').onclick = () => { S.home = { name: 'Casa', lat: S.from.lat, lon: S.from.lon }; save(); renderSettings(); };
   if ($('del-home')) $('del-home').onclick = () => { S.home = null; save(); renderSettings(); };
-  $('reset').onclick = () => { const keep = { home: S.home, from: S.from, to: S.to, ocmKey: S.ocmKey, car: S.car, cap: CAR().cap }; S = JSON.parse(JSON.stringify(DEFAULTS)); Object.assign(S, keep); save(); renderSettings(); recompute(true); };
+  $('reset').onclick = () => { const keep = { home: S.home, from: S.from, to: S.to, ocmKey: S.ocmKey, car: S.car, cap: CAR().cap, learn: S.learn }; S = JSON.parse(JSON.stringify(DEFAULTS)); Object.assign(S, keep); save(); renderSettings(); recompute(true); };
 }
 
 function renderCars(){
